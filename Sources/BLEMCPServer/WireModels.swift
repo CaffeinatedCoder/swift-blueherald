@@ -1,0 +1,375 @@
+import BLEMCPCore
+import Foundation
+
+// The JSON contract agents see. Kept separate from the core model so the wire format stays
+// stable while the domain evolves. Property names are camelCase here and snake_case on the wire;
+// optional properties are omitted when nil.
+
+struct UUIDReference: Encodable {
+    let uuid: String
+    let name: String?
+
+    init(_ uuid: BLEUUID) {
+        self.uuid = uuid.description
+        self.name = AssignedNumbers.name(for: uuid)
+    }
+}
+
+struct Bytes: Encodable {
+    let hex: String
+    /// Present only when the bytes are printable UTF-8 text, ignoring trailing NULs.
+    let utf8: String?
+    let length: Int
+
+    init(_ data: Data) {
+        hex = Hex.encode(data)
+        length = data.count
+        utf8 = Self.printableText(data)
+    }
+
+    private static func printableText(_ data: Data) -> String? {
+        let trimmed = data.reversed().drop { $0 == 0 }.reversed()
+        guard !trimmed.isEmpty, let text = String(validating: trimmed, as: UTF8.self) else { return nil }
+        let isPrintable = text.unicodeScalars.allSatisfy { scalar in
+            !scalar.properties.generalCategory.isControl || scalar == "\n" || scalar == "\r" || scalar == "\t"
+        }
+        return isPrintable ? text : nil
+    }
+}
+
+extension Unicode.GeneralCategory {
+    fileprivate var isControl: Bool {
+        switch self {
+        case .control, .format, .unassigned, .privateUse, .surrogate: true
+        default: false
+        }
+    }
+}
+
+struct ErrorSummary: Encodable {
+    let code: String
+    let message: String
+
+    init(_ error: BLEError) {
+        code = error.code
+        message = error.message
+    }
+}
+
+struct Manufacturer: Encodable {
+    let companyId: String
+    let company: String?
+    let data: String
+}
+
+struct ServiceDataEntry: Encodable {
+    let uuid: String
+    let name: String?
+    let data: String
+}
+
+struct DeviceSummary: Encodable {
+    let peripheralId: String
+    let name: String?
+    let rssi: Int?
+    let strongestRssi: Int?
+    let connectable: Bool?
+    let txPower: Int?
+    /// Omitted when empty, like every other absent field, to keep scan results compact.
+    let services: [UUIDReference]?
+    let manufacturer: Manufacturer?
+    let serviceData: [ServiceDataEntry]?
+    let advertisementCount: Int
+    let lastSeen: Date
+
+    init(_ peripheral: DiscoveredPeripheral) {
+        peripheralId = peripheral.id.description
+        name = peripheral.name
+        rssi = peripheral.rssi
+        strongestRssi = peripheral.strongestRSSI
+        connectable = peripheral.isConnectable
+        txPower = peripheral.txPowerLevel
+        services = peripheral.serviceUUIDs.isEmpty ? nil : peripheral.serviceUUIDs.map(UUIDReference.init)
+        manufacturer = peripheral.manufacturerData.map { data in
+            let id = peripheral.manufacturerID
+            return Manufacturer(
+                companyId: id.map { "0x" + Hex.encode([UInt8($0 >> 8), UInt8($0 & 0xFF)]).uppercased() } ?? "unknown",
+                company: id.flatMap(AssignedNumbers.companyName(for:)),
+                data: Hex.encode(data))
+        }
+        serviceData =
+            peripheral.serviceData.isEmpty
+            ? nil
+            : peripheral.serviceData
+                .sorted { $0.key < $1.key }
+                .map { ServiceDataEntry(uuid: $0.key.description, name: AssignedNumbers.name(for: $0.key), data: Hex.encode($0.value)) }
+        advertisementCount = peripheral.advertisementCount
+        lastSeen = peripheral.lastSeen
+    }
+}
+
+struct ScanReport: Encodable {
+    let scanId: String
+    let active: Bool
+    let startedAt: Date
+    let endedAt: Date?
+    let matched: Int
+    let seen: Int
+    let ignored: Int?
+    let truncated: Bool
+    let devices: [DeviceSummary]
+
+    init(_ snapshot: ScanSnapshot) {
+        scanId = snapshot.id.description
+        active = snapshot.isActive
+        startedAt = snapshot.startedAt
+        endedAt = snapshot.endedAt
+        matched = snapshot.matchedCount
+        seen = snapshot.seenCount
+        ignored = snapshot.ignoredCount > 0 ? snapshot.ignoredCount : nil
+        truncated = snapshot.peripherals.count < snapshot.matchedCount
+        devices = snapshot.peripherals.map(DeviceSummary.init)
+    }
+}
+
+struct ScanStarted: Encodable {
+    let scanId: String
+}
+
+struct CharacteristicSummary: Encodable {
+    let uuid: String
+    let name: String?
+    let properties: [String]
+    let descriptors: [UUIDReference]
+
+    init(_ characteristic: GATTCharacteristic) {
+        uuid = characteristic.uuid.description
+        name = AssignedNumbers.name(for: characteristic.uuid)
+        properties = characteristic.properties.names
+        descriptors = characteristic.descriptors.map { UUIDReference($0.uuid) }
+    }
+}
+
+struct ServiceSummary: Encodable {
+    let uuid: String
+    let name: String?
+    let primary: Bool
+    let characteristics: [CharacteristicSummary]
+
+    init(_ service: GATTService) {
+        uuid = service.uuid.description
+        name = AssignedNumbers.name(for: service.uuid)
+        primary = service.isPrimary
+        characteristics = service.characteristics.map(CharacteristicSummary.init)
+    }
+}
+
+struct WriteLimits: Encodable {
+    let withResponse: Int
+    let withoutResponse: Int
+}
+
+struct ConnectionReport: Encodable {
+    let peripheralId: String
+    let name: String?
+    let state: String
+    let connectedAt: Date?
+    let maxWriteLength: WriteLimits?
+    let subscriptions: [String]
+    let services: [ServiceSummary]?
+    let discoveryError: ErrorSummary?
+
+    init(_ snapshot: ConnectionSnapshot, includeServices: Bool = true) {
+        peripheralId = snapshot.id.description
+        name = snapshot.name
+        state = snapshot.state.rawValue
+        connectedAt = snapshot.connectedAt
+        maxWriteLength = snapshot.maximumWriteLength.map {
+            WriteLimits(withResponse: $0.withResponse, withoutResponse: $0.withoutResponse)
+        }
+        subscriptions = snapshot.subscriptions.map(\.description)
+        services = includeServices ? snapshot.services?.map(ServiceSummary.init) : nil
+        discoveryError = snapshot.discoveryError.map(ErrorSummary.init)
+    }
+}
+
+struct DisconnectReport: Encodable {
+    let peripheralId: String
+    let disconnected: Bool
+}
+
+struct ServicesReport: Encodable {
+    let peripheralId: String
+    let services: [ServiceSummary]
+}
+
+struct ValueReport: Encodable {
+    let peripheralId: String
+    let serviceUuid: String
+    let characteristicUuid: String
+    let characteristicName: String?
+    let descriptorUuid: String?
+    let descriptorName: String?
+    let value: Bytes
+    let readAt: Date
+
+    init(_ reading: CharacteristicValue) {
+        peripheralId = reading.address.peripheral.description
+        serviceUuid = reading.address.service.description
+        characteristicUuid = reading.address.characteristic.description
+        characteristicName = AssignedNumbers.name(for: reading.address.characteristic)
+        descriptorUuid = nil
+        descriptorName = nil
+        value = Bytes(reading.value)
+        readAt = reading.readAt
+    }
+
+    init(_ reading: DescriptorValue) {
+        let characteristic = reading.address.characteristic
+        peripheralId = characteristic.peripheral.description
+        serviceUuid = characteristic.service.description
+        characteristicUuid = characteristic.characteristic.description
+        characteristicName = AssignedNumbers.name(for: characteristic.characteristic)
+        descriptorUuid = reading.address.descriptor.description
+        descriptorName = AssignedNumbers.name(for: reading.address.descriptor)
+        value = Bytes(reading.value)
+        readAt = reading.readAt
+    }
+}
+
+struct WriteReport: Encodable {
+    let peripheralId: String
+    let serviceUuid: String
+    let characteristicUuid: String
+    let descriptorUuid: String?
+    let bytesWritten: Int
+    let mode: String?
+
+    init(_ receipt: WriteReceipt) {
+        peripheralId = receipt.address.peripheral.description
+        serviceUuid = receipt.address.service.description
+        characteristicUuid = receipt.address.characteristic.description
+        descriptorUuid = receipt.descriptor?.description
+        bytesWritten = receipt.byteCount
+        mode = receipt.mode?.rawValue
+    }
+}
+
+struct SubscriptionReport: Encodable {
+    let subscriptionId: String
+    let peripheralId: String
+    let serviceUuid: String
+    let characteristicUuid: String
+    let characteristicName: String?
+    let mode: String
+    let state: String
+    let closedReason: String?
+    let received: Int
+    let dropped: Int
+    let buffered: Int
+    let createdAt: Date
+
+    init(_ snapshot: SubscriptionSnapshot) {
+        subscriptionId = snapshot.id.description
+        peripheralId = snapshot.address.peripheral.description
+        serviceUuid = snapshot.address.service.description
+        characteristicUuid = snapshot.address.characteristic.description
+        characteristicName = AssignedNumbers.name(for: snapshot.address.characteristic)
+        mode = snapshot.mode.rawValue
+        switch snapshot.state {
+        case .pending:
+            state = "pending"
+            closedReason = nil
+        case .active:
+            state = "active"
+            closedReason = nil
+        case .closed(let reason):
+            state = "closed"
+            closedReason = reason
+        }
+        received = snapshot.receivedCount
+        dropped = snapshot.droppedCount
+        buffered = snapshot.bufferedCount
+        createdAt = snapshot.createdAt
+    }
+}
+
+struct NotificationEntry: Encodable {
+    let subscriptionId: String
+    let seq: UInt64
+    let receivedAt: Date
+    let value: Bytes
+
+    init(_ notification: ValueNotification) {
+        subscriptionId = notification.subscription.description
+        seq = notification.sequence
+        receivedAt = notification.receivedAt
+        value = Bytes(notification.value)
+    }
+}
+
+struct NotificationsReport: Encodable {
+    let notifications: [NotificationEntry]
+    let remaining: Int
+    let dropped: Int
+    let subscriptions: [SubscriptionReport]
+
+    init(_ batch: NotificationBatch) {
+        notifications = batch.notifications.map(NotificationEntry.init)
+        remaining = batch.remaining
+        dropped = batch.dropped
+        subscriptions = batch.subscriptions.map(SubscriptionReport.init)
+    }
+}
+
+struct RSSIReport: Encodable {
+    let peripheralId: String
+    let rssi: Int
+}
+
+struct StatusReport: Encodable {
+    struct Server: Encodable {
+        let name: String
+        let version: String
+    }
+
+    struct Policy: Encodable {
+        let writesEnabled: Bool
+        let writeAllowlist: [String]?
+    }
+
+    struct Limits: Encodable {
+        let maxConnections: Int
+        let maxSubscriptions: Int
+        let maxScans: Int
+        let notificationBuffer: Int
+    }
+
+    let server: Server
+    let adapterState: String
+    let hint: String?
+    let policy: Policy
+    let limits: Limits
+    let activeScans: [String]
+    let connections: [ConnectionReport]
+    let subscriptions: [SubscriptionReport]
+
+    init(_ status: SessionStatus) {
+        let configuration = status.configuration
+        server = Server(name: BLEMCPServer.name, version: BLEMCPServer.version)
+        adapterState = status.adapterState.rawValue
+        hint = status.adapterState == .poweredOn ? nil : BLEError.bluetoothUnavailable(status.adapterState).hint
+        policy = Policy(
+            writesEnabled: configuration.writePolicy.isEnabled,
+            writeAllowlist: configuration.writePolicy.allowlist.isEmpty
+                ? nil : configuration.writePolicy.allowlist.sorted().map(\.description))
+        limits = Limits(
+            maxConnections: configuration.limits.maxConnections,
+            maxSubscriptions: configuration.limits.maxSubscriptions,
+            maxScans: configuration.limits.maxScans,
+            notificationBuffer: configuration.limits.notificationBufferCapacity)
+        activeScans = status.activeScans.map(\.description)
+        connections = status.connections.map { ConnectionReport($0, includeServices: false) }
+        subscriptions = status.subscriptions.map(SubscriptionReport.init)
+    }
+}

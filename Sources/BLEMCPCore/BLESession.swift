@@ -1,0 +1,781 @@
+public import Foundation
+
+/// The stateful heart of the server: scans, connections, subscriptions and their notification
+/// buffers, on top of any `BLECentral`.
+///
+/// All state lives in this actor and leaves it only as immutable snapshots. Because actors are
+/// re-entrant, every method that suspends re-validates what it checked before the suspension
+/// (capacity, connection state) instead of trusting it, and claims slots before awaiting so
+/// concurrent calls cannot overshoot a limit.
+public actor BLESession {
+    public nonisolated let configuration: SessionConfiguration
+    /// Disconnections and adapter changes, for forwarding to the client. Single consumer.
+    public nonisolated let events: AsyncStream<SessionEvent>
+
+    private let central: any BLECentral
+    private let eventSink: AsyncStream<SessionEvent>.Continuation
+    private var eventPump: Task<Void, Never>?
+    private var isShutDown = false
+    private var adapterState = CentralState.unknown
+
+    private var scans: [ScanID: ActiveScan] = [:]
+    private var connections: [PeripheralID: Connection] = [:]
+    private var subscriptions: [SubscriptionID: Subscription] = [:]
+    private var subscriptionsByAddress: [CharacteristicAddress: SubscriptionID] = [:]
+    private var waiters: [NotificationWaiter] = []
+    private var knownNames: [PeripheralID: String] = [:]
+
+    private var lastScanID = 0
+    private var lastSubscriptionID = 0
+    private var lastSequence: UInt64 = 0
+    private var lastWaiterToken: UInt64 = 0
+
+    private static let knownNameCapacity = 4096
+    private static let finishedScanCapacity = 8
+
+    public init(central: some BLECentral, configuration: SessionConfiguration = SessionConfiguration()) {
+        self.central = central
+        self.configuration = configuration
+        let (events, eventSink) = AsyncStream.makeStream(of: SessionEvent.self, bufferingPolicy: .bufferingNewest(256))
+        self.events = events
+        self.eventSink = eventSink
+    }
+
+    /// Starts consuming backend events. Idempotent.
+    public func start() {
+        guard eventPump == nil, !isShutDown else { return }
+        let backendEvents = central.events
+        eventPump = Task { [weak self] in
+            for await event in backendEvents {
+                guard let self else { return }
+                await self.handle(event)
+            }
+        }
+    }
+
+    /// Stops every scan, closes every subscription and disconnects every peripheral.
+    public func shutdown() async {
+        guard !isShutDown else { return }
+        isShutDown = true
+        for id in scans.keys {
+            scans[id]?.finish()
+        }
+        scans.removeAll()
+        let peripherals = Array(connections.keys)
+        for id in peripherals {
+            closeSubscriptions(of: id, reason: "server shutting down")
+        }
+        connections.removeAll()
+        let pending = waiters
+        waiters.removeAll()
+        pending.forEach { $0.continuation.resume() }
+        eventPump?.cancel()
+        eventPump = nil
+        eventSink.finish()
+
+        let central = central
+        await withTaskGroup(of: Void.self) { group in
+            for id in peripherals {
+                group.addTask { await central.disconnect(id) }
+            }
+        }
+    }
+
+    // MARK: - Status
+
+    public func status() async -> SessionStatus {
+        let state = await central.state()
+        return SessionStatus(
+            adapterState: state,
+            configuration: configuration,
+            activeScans: scans.values.filter(\.isActive).map(\.id).sorted(),
+            connections: await connectionSnapshots(),
+            subscriptions: subscriptions.values.map(\.snapshot).sorted { $0.id < $1.id })
+    }
+
+    // MARK: - Scanning
+
+    /// Scans for `duration`, or until `stopAfter` peripherals have matched, and returns what it found.
+    public func scan(
+        filter: ScanFilter = .all,
+        duration: Duration,
+        stopAfter: Int? = nil,
+        maxResults: Int = .max
+    ) async throws(BLEError) -> ScanSnapshot {
+        let id = try await startScan(filter: filter, duration: duration, stopAfter: stopAfter)
+        await waitForScanEnd(id)
+        return try stopScan(id, maxResults: maxResults)
+    }
+
+    /// Starts a background scan. It runs until `duration` elapses, `stopAfter` peripherals match,
+    /// or `stopScan` is called; its results stay readable until `stopScan`.
+    public func startScan(
+        filter: ScanFilter = .all,
+        duration: Duration? = nil,
+        stopAfter: Int? = nil
+    ) async throws(BLEError) -> ScanID {
+        try ensureScanCapacity()
+        try await ensurePoweredOn()
+        let stream = try await central.scan()
+        // Re-check after suspending: another call may have taken the last slot. Dropping the
+        // unused stream terminates it, which releases the backend scan.
+        try ensureScanCapacity()
+
+        lastScanID += 1
+        let id = ScanID(rawValue: lastScanID)
+        var scan = ActiveScan(id: id, filter: filter, stopAfter: stopAfter)
+        scan.consumer = Task { [weak self] in
+            for await advertisement in stream {
+                guard let self else { return }
+                await self.record(advertisement, in: id)
+            }
+        }
+        if let duration {
+            scan.timer = Task { [weak self] in
+                try? await Task.sleep(for: duration)
+                guard !Task.isCancelled else { return }
+                await self?.finishScan(id)
+            }
+        }
+        scans[id] = scan
+        pruneFinishedScans()
+        return id
+    }
+
+    public func scanResults(_ id: ScanID, maxResults: Int = .max) throws(BLEError) -> ScanSnapshot {
+        guard let scan = scans[id] else { throw .scanNotFound(id) }
+        return scan.snapshot(maxResults: maxResults)
+    }
+
+    /// Stops the scan if it is running and returns its final results. The scan is then forgotten.
+    @discardableResult
+    public func stopScan(_ id: ScanID, maxResults: Int = .max) throws(BLEError) -> ScanSnapshot {
+        guard var scan = scans.removeValue(forKey: id) else { throw .scanNotFound(id) }
+        scan.finish()
+        return scan.snapshot(maxResults: maxResults)
+    }
+
+    private func record(_ advertisement: Advertisement, in id: ScanID) {
+        if let name = advertisement.name,
+            knownNames.count < Self.knownNameCapacity || knownNames[advertisement.peripheral] != nil
+        {
+            knownNames[advertisement.peripheral] = name
+        }
+        guard let reachedTarget = scans[id]?.record(advertisement, limit: configuration.limits.maxPeripheralsPerScan)
+        else { return }
+        if reachedTarget {
+            finishScan(id)
+        }
+    }
+
+    private func finishScan(_ id: ScanID) {
+        scans[id]?.finish()
+    }
+
+    private func waitForScanEnd(_ id: ScanID) async {
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                guard scans[id]?.isActive == true, !Task.isCancelled else {
+                    continuation.resume()
+                    return
+                }
+                scans[id]?.completionWaiters.append(continuation)
+            }
+        } onCancel: {
+            Task { await self.finishScan(id) }
+        }
+    }
+
+    private func ensureScanCapacity() throws(BLEError) {
+        let limit = configuration.limits.maxScans
+        guard scans.values.count(where: \.isActive) < limit else { throw .scanLimitReached(limit: limit) }
+    }
+
+    private func pruneFinishedScans() {
+        let finished = scans.values.filter { !$0.isActive }.sorted { $0.id < $1.id }
+        for scan in finished.dropLast(Self.finishedScanCapacity) {
+            scans[scan.id] = nil
+        }
+    }
+
+    // MARK: - Connections
+
+    public func connect(_ id: PeripheralID, discover: Bool = true) async throws(BLEError) -> ConnectionSnapshot {
+        if let existing = connections[id] {
+            guard existing.state == .connected else { throw .alreadyConnecting(id) }
+            if discover, existing.services == nil {
+                _ = try? await discoverServices(of: id)
+            }
+            return try await connectionSnapshot(id)
+        }
+
+        try ensureConnectionCapacity()
+        try await ensurePoweredOn()
+        guard connections[id] == nil else { throw .alreadyConnecting(id) }
+        try ensureConnectionCapacity()
+        connections[id] = Connection(id: id, name: knownNames[id])
+
+        let central = central
+        let peripheral: ConnectedPeripheral
+        do {
+            peripheral = try await withDeadline(configuration.timeouts.connect, operation: "Connecting to \(id)") {
+                try await central.connect(id)
+            }
+        } catch {
+            if connections[id]?.state == .connecting { connections[id] = nil }
+            throw error
+        }
+
+        guard connections[id] != nil else {
+            // Disconnected or shut down while the link came up.
+            await central.disconnect(id)
+            throw .disconnected(id, reason: "the connection was closed while it was being established")
+        }
+        connections[id]?.markConnected(name: peripheral.name ?? knownNames[id])
+        if discover {
+            _ = try? await discoverServices(of: id)
+        }
+        return try await connectionSnapshot(id)
+    }
+
+    public func disconnect(_ id: PeripheralID) async throws(BLEError) {
+        guard connections.removeValue(forKey: id) != nil else { throw .notConnected(id) }
+        closeSubscriptions(of: id, reason: "disconnected on request")
+        await central.disconnect(id)
+    }
+
+    public func connectionSnapshots() async -> [ConnectionSnapshot] {
+        var snapshots: [ConnectionSnapshot] = []
+        for id in connections.keys.sorted(by: { $0.uuid.uuidString < $1.uuid.uuidString }) {
+            if let snapshot = try? await connectionSnapshot(id) {
+                snapshots.append(snapshot)
+            }
+        }
+        return snapshots
+    }
+
+    public func connectionSnapshot(_ id: PeripheralID) async throws(BLEError) -> ConnectionSnapshot {
+        guard connections[id] != nil else { throw .notConnected(id) }
+        var lengths: WriteLengths?
+        if connections[id]?.state == .connected {
+            let central = central
+            if let withResponse = try? await central.maximumWriteLength(for: id, mode: .withResponse),
+                let withoutResponse = try? await central.maximumWriteLength(for: id, mode: .withoutResponse)
+            {
+                lengths = WriteLengths(withResponse: withResponse, withoutResponse: withoutResponse)
+            }
+        }
+        guard let connection = connections[id] else { throw .notConnected(id) }
+        return ConnectionSnapshot(
+            id: id,
+            name: connection.name,
+            state: connection.state,
+            connectedAt: connection.connectedAt,
+            services: connection.services,
+            discoveryError: connection.discoveryError,
+            subscriptions: subscriptions.values.filter { $0.address.peripheral == id }.map(\.id).sorted(),
+            maximumWriteLength: lengths)
+    }
+
+    private func ensureConnectionCapacity() throws(BLEError) {
+        let limit = configuration.limits.maxConnections
+        guard connections.count < limit else { throw .connectionLimitReached(limit: limit) }
+    }
+
+    private func requireConnected(_ id: PeripheralID) throws(BLEError) -> Connection {
+        guard let connection = connections[id], connection.state == .connected else { throw .notConnected(id) }
+        return connection
+    }
+
+    // MARK: - GATT
+
+    /// The peripheral's attribute table, discovered on first use and cached for the connection.
+    public func discoverServices(of id: PeripheralID, refresh: Bool = false) async throws(BLEError) -> [GATTService] {
+        let connection = try requireConnected(id)
+        if !refresh, let services = connection.services { return services }
+
+        let central = central
+        do throws(BLEError) {
+            let services = try await withDeadline(
+                configuration.timeouts.discovery, operation: "Discovering services of \(id)"
+            ) {
+                try await central.discoverServices(of: id)
+            }
+            guard connections[id]?.state == .connected else { throw .disconnected(id, reason: nil) }
+            connections[id]?.services = services
+            connections[id]?.discoveryError = nil
+            return services
+        } catch {
+            connections[id]?.discoveryError = error
+            throw error
+        }
+    }
+
+    public func read(_ selector: CharacteristicSelector) async throws(BLEError) -> CharacteristicValue {
+        let target = try await resolve(selector)
+        try require(.read, named: "read", on: target)
+        let central = central
+        let address = target.address
+        let value = try await withDeadline(configuration.timeouts.operation, operation: "Reading \(address.characteristic)") {
+            try await central.read(address)
+        }
+        return CharacteristicValue(
+            address: address, properties: target.characteristic.properties, value: value, readAt: .now)
+    }
+
+    /// Writes `value`. Without an explicit mode, characteristics that acknowledge writes get an
+    /// acknowledged write; the rest get a write without response.
+    public func write(
+        _ value: Data,
+        to selector: CharacteristicSelector,
+        mode requestedMode: WriteMode? = nil
+    ) async throws(BLEError) -> WriteReceipt {
+        let policy = configuration.writePolicy
+        guard policy.isEnabled else { throw .writesDisabled }
+        let target = try await resolve(selector)
+        guard policy.permits(target.address.characteristic) else {
+            throw .writeNotAllowed(target.address.characteristic)
+        }
+
+        let mode = requestedMode ?? (target.characteristic.properties.contains(.write) ? .withResponse : .withoutResponse)
+        switch mode {
+        case .withResponse: try require(.write, named: "write", on: target)
+        case .withoutResponse: try require(.writeWithoutResponse, named: "write_without_response", on: target)
+        }
+
+        let central = central
+        let address = target.address
+        let maximum = try await central.maximumWriteLength(for: address.peripheral, mode: mode)
+        guard value.count <= maximum else { throw .payloadTooLarge(size: value.count, maximum: maximum) }
+        try await withDeadline(configuration.timeouts.operation, operation: "Writing \(address.characteristic)") {
+            try await central.write(value, to: address, mode: mode)
+        }
+        return WriteReceipt(address: address, descriptor: nil, byteCount: value.count, mode: mode)
+    }
+
+    public func readDescriptor(
+        _ descriptor: BLEUUID,
+        of selector: CharacteristicSelector
+    ) async throws(BLEError) -> DescriptorValue {
+        let target = try await resolve(selector)
+        let address = try GATTResolver.resolve(descriptor: descriptor, of: target)
+        let central = central
+        let value = try await withDeadline(configuration.timeouts.operation, operation: "Reading descriptor \(descriptor)") {
+            try await central.read(address)
+        }
+        return DescriptorValue(address: address, value: value, readAt: .now)
+    }
+
+    public func writeDescriptor(
+        _ value: Data,
+        to descriptor: BLEUUID,
+        of selector: CharacteristicSelector
+    ) async throws(BLEError) -> WriteReceipt {
+        let policy = configuration.writePolicy
+        guard policy.isEnabled else { throw .writesDisabled }
+        guard descriptor != GATTDescriptor.clientCharacteristicConfiguration else {
+            throw .reservedDescriptor(descriptor)
+        }
+        let target = try await resolve(selector)
+        guard policy.permits(target.address.characteristic) else {
+            throw .writeNotAllowed(target.address.characteristic)
+        }
+        let address = try GATTResolver.resolve(descriptor: descriptor, of: target)
+        let central = central
+        try await withDeadline(configuration.timeouts.operation, operation: "Writing descriptor \(descriptor)") {
+            try await central.write(value, to: address)
+        }
+        return WriteReceipt(address: target.address, descriptor: descriptor, byteCount: value.count, mode: nil)
+    }
+
+    public func readRSSI(of id: PeripheralID) async throws(BLEError) -> Int {
+        _ = try requireConnected(id)
+        let central = central
+        return try await withDeadline(configuration.timeouts.operation, operation: "Reading RSSI of \(id)") {
+            try await central.readRSSI(of: id)
+        }
+    }
+
+    private func resolve(_ selector: CharacteristicSelector) async throws(BLEError) -> ResolvedCharacteristic {
+        let services = try await discoverServices(of: selector.peripheral)
+        return try GATTResolver.resolve(selector, in: services)
+    }
+
+    private func require(
+        _ property: CharacteristicProperties,
+        named name: String,
+        on target: ResolvedCharacteristic
+    ) throws(BLEError) {
+        let properties = target.characteristic.properties
+        guard properties.contains(property) else {
+            throw .propertyNotSupported(
+                characteristic: target.address.characteristic, required: name, available: properties.names)
+        }
+    }
+
+    // MARK: - Subscriptions
+
+    /// Enables notifications (or indications) and starts buffering them. Subscribing to a
+    /// characteristic that already has an open subscription returns that subscription.
+    public func subscribe(_ selector: CharacteristicSelector) async throws(BLEError) -> SubscriptionSnapshot {
+        let target = try await resolve(selector)
+        let address = target.address
+        if let existing = subscriptionsByAddress[address], let subscription = subscriptions[existing] {
+            return subscription.snapshot
+        }
+
+        let properties = target.characteristic.properties
+        let mode: NotificationMode
+        if properties.contains(.notify) {
+            mode = .notify
+        } else if properties.contains(.indicate) {
+            mode = .indicate
+        } else {
+            throw .propertyNotSupported(
+                characteristic: address.characteristic, required: "notify or indicate", available: properties.names)
+        }
+        let limit = configuration.limits.maxSubscriptions
+        guard subscriptions.values.count(where: \.isOpen) < limit else {
+            throw .subscriptionLimitReached(limit: limit)
+        }
+
+        lastSubscriptionID += 1
+        let id = SubscriptionID(rawValue: lastSubscriptionID)
+        subscriptions[id] = Subscription(
+            id: id, address: address, mode: mode, capacity: configuration.limits.notificationBufferCapacity)
+        subscriptionsByAddress[address] = id
+
+        let central = central
+        do {
+            try await withDeadline(configuration.timeouts.operation, operation: "Enabling notifications on \(address.characteristic)") {
+                try await central.setNotifications(true, for: address)
+            }
+        } catch {
+            discardSubscription(id)
+            throw error
+        }
+
+        guard subscriptions[id]?.state == .pending else {
+            // The peripheral disconnected while notifications were being enabled.
+            discardSubscription(id)
+            throw .disconnected(address.peripheral, reason: "the peripheral disconnected while subscribing")
+        }
+        subscriptions[id]?.state = .active
+        guard let subscription = subscriptions[id] else { throw .subscriptionNotFound(id) }
+        return subscription.snapshot
+    }
+
+    /// Disables notifications and discards the subscription, including anything still buffered.
+    @discardableResult
+    public func unsubscribe(_ id: SubscriptionID) async throws(BLEError) -> SubscriptionSnapshot {
+        guard var subscription = subscriptions[id] else { throw .subscriptionNotFound(id) }
+        let wasOpen = subscription.isOpen
+        discardSubscription(id)
+        subscription.state = .closed(reason: "unsubscribed")
+
+        let address = subscription.address
+        if wasOpen, connections[address.peripheral]?.state == .connected {
+            let central = central
+            // Best effort: the subscription is gone either way, and stray notifications that
+            // still arrive have nowhere to go.
+            try? await withDeadline(configuration.timeouts.operation, operation: "Disabling notifications") {
+                try await central.setNotifications(false, for: address)
+            }
+        }
+        return subscription.snapshot
+    }
+
+    /// Returns up to `maxCount` buffered notifications in arrival order, from one subscription or
+    /// from all of them. When nothing is buffered, waits up to `wait` for the next one.
+    public func notifications(
+        from id: SubscriptionID? = nil,
+        maxCount: Int,
+        waitUpTo wait: Duration = .zero
+    ) async throws(BLEError) -> NotificationBatch {
+        if let id, subscriptions[id] == nil { throw .subscriptionNotFound(id) }
+        let selected = { (subscription: Subscription) in id == nil || subscription.id == id }
+        let buffered = subscriptions.values.filter(selected).reduce(0) { $0 + $1.buffer.count }
+        if wait > .zero, buffered == 0, subscriptions.values.contains(where: { selected($0) && $0.isOpen }) {
+            await waitForNotification(on: id, timeout: wait)
+        }
+        return drain(id, maxCount: maxCount)
+    }
+
+    private func drain(_ id: SubscriptionID?, maxCount: Int) -> NotificationBatch {
+        let ids = id.map { [$0] } ?? subscriptions.keys.sorted()
+        var collected: [ValueNotification] = []
+        collected.reserveCapacity(min(maxCount, 256))
+
+        // k-way merge on the session-wide sequence number; k is bounded by maxSubscriptions.
+        while collected.count < maxCount {
+            var next: SubscriptionID?
+            var lowest = UInt64.max
+            for candidate in ids {
+                if let head = subscriptions[candidate]?.buffer.first, head.sequence < lowest {
+                    next = candidate
+                    lowest = head.sequence
+                }
+            }
+            guard let next, let notification = subscriptions[next]?.buffer.popFirst() else { break }
+            collected.append(notification)
+        }
+
+        var dropped = 0
+        var remaining = 0
+        var snapshots: [SubscriptionSnapshot] = []
+        for candidate in ids {
+            guard let subscription = subscriptions[candidate] else { continue }
+            dropped += subscription.droppedSinceLastRead
+            remaining += subscription.buffer.count
+            subscriptions[candidate]?.droppedSinceLastRead = 0
+            snapshots.append(subscription.snapshot)
+            if !subscription.isOpen, subscription.buffer.isEmpty {
+                // Closed and fully read: nothing left to report.
+                subscriptions[candidate] = nil
+            }
+        }
+        return NotificationBatch(notifications: collected, remaining: remaining, dropped: dropped, subscriptions: snapshots)
+    }
+
+    private func waitForNotification(on id: SubscriptionID?, timeout: Duration) async {
+        lastWaiterToken += 1
+        let token = lastWaiterToken
+        let timer = Task { [weak self] in
+            try? await Task.sleep(for: timeout)
+            await self?.resumeWaiter(token)
+        }
+        defer { timer.cancel() }
+
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                guard !Task.isCancelled else {
+                    continuation.resume()
+                    return
+                }
+                waiters.append(NotificationWaiter(token: token, subscription: id, continuation: continuation))
+            }
+        } onCancel: {
+            Task { await self.resumeWaiter(token) }
+        }
+    }
+
+    private func resumeWaiter(_ token: UInt64) {
+        guard let index = waiters.firstIndex(where: { $0.token == token }) else { return }
+        waiters.remove(at: index).continuation.resume()
+    }
+
+    private func resumeWaiters(for id: SubscriptionID) {
+        guard !waiters.isEmpty else { return }
+        let ready = waiters.filter { $0.isWaiting(for: id) }
+        waiters.removeAll { $0.isWaiting(for: id) }
+        ready.forEach { $0.continuation.resume() }
+    }
+
+    private func discardSubscription(_ id: SubscriptionID) {
+        guard let subscription = subscriptions.removeValue(forKey: id) else { return }
+        if subscriptionsByAddress[subscription.address] == id {
+            subscriptionsByAddress[subscription.address] = nil
+        }
+        resumeWaiters(for: id)
+    }
+
+    private func closeSubscriptions(of peripheral: PeripheralID, reason: String) {
+        for (id, subscription) in subscriptions where subscription.address.peripheral == peripheral && subscription.isOpen {
+            subscriptions[id]?.state = .closed(reason: reason)
+            subscriptionsByAddress[subscription.address] = nil
+            resumeWaiters(for: id)
+        }
+    }
+
+    // MARK: - Backend events
+
+    private func handle(_ event: CentralEvent) {
+        switch event {
+        case .stateChanged(let state):
+            guard state != adapterState else { return }
+            adapterState = state
+            eventSink.yield(.adapterStateChanged(state))
+            guard state != .poweredOn else { return }
+            // Links and scans do not survive the adapter going away.
+            for id in Array(connections.keys) {
+                connectionLost(id, reason: "Bluetooth became \(state.rawValue)")
+            }
+            for id in scans.keys {
+                scans[id]?.finish()
+            }
+
+        case .disconnected(let id, let reason):
+            connectionLost(id, reason: reason)
+
+        case .valueUpdated(let address, let value, let receivedAt):
+            guard let id = subscriptionsByAddress[address] else { return }
+            lastSequence += 1
+            subscriptions[id]?.record(
+                ValueNotification(
+                    subscription: id, sequence: lastSequence, address: address, value: value, receivedAt: receivedAt))
+            resumeWaiters(for: id)
+        }
+    }
+
+    private func connectionLost(_ id: PeripheralID, reason: String?) {
+        guard let connection = connections.removeValue(forKey: id) else { return }
+        closeSubscriptions(of: id, reason: "peripheral disconnected" + (reason.map { ": \($0)" } ?? ""))
+        if connection.state == .connected {
+            eventSink.yield(.peripheralDisconnected(id, name: connection.name, reason: reason))
+        }
+    }
+
+    private func ensurePoweredOn() async throws(BLEError) {
+        guard !isShutDown else { throw .cancelled }
+        let central = central
+        do {
+            try await withDeadline(configuration.timeouts.poweredOn, operation: "Waiting for Bluetooth to power on") {
+                try await central.waitUntilPoweredOn()
+            }
+        } catch .timedOut {
+            throw .bluetoothUnavailable(await central.state())
+        }
+    }
+}
+
+// MARK: - Internal state
+
+private struct ActiveScan {
+    let id: ScanID
+    let filter: ScanFilter
+    let stopAfter: Int?
+    let startedAt = Date.now
+    var endedAt: Date?
+    var peripherals: [PeripheralID: DiscoveredPeripheral] = [:]
+    var matched: Set<PeripheralID> = []
+    var ignored = 0
+    var consumer: Task<Void, Never>?
+    var timer: Task<Void, Never>?
+    var completionWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(id: ScanID, filter: ScanFilter, stopAfter: Int?) {
+        self.id = id
+        self.filter = filter
+        self.stopAfter = stopAfter
+    }
+
+    var isActive: Bool { endedAt == nil }
+
+    /// Merges the advertisement; returns whether the scan reached its `stopAfter` target.
+    mutating func record(_ advertisement: Advertisement, limit: Int) -> Bool {
+        guard isActive else { return false }
+        let id = advertisement.peripheral
+        if peripherals[id]?.merge(advertisement) == nil {
+            guard peripherals.count < limit else {
+                ignored += 1
+                return false
+            }
+            peripherals[id] = DiscoveredPeripheral(advertisement)
+        }
+        if let peripheral = peripherals[id], filter.matches(peripheral) {
+            matched.insert(id)
+        }
+        return stopAfter.map { matched.count >= $0 } ?? false
+    }
+
+    mutating func finish() {
+        guard isActive else { return }
+        endedAt = .now
+        consumer?.cancel()
+        timer?.cancel()
+        consumer = nil
+        timer = nil
+        completionWaiters.forEach { $0.resume() }
+        completionWaiters.removeAll()
+    }
+
+    func snapshot(maxResults: Int) -> ScanSnapshot {
+        let matching = peripherals.values
+            .filter(filter.matches)
+            .sorted { ($0.rssi ?? .min, $1.id.uuid.uuidString) > ($1.rssi ?? .min, $0.id.uuid.uuidString) }
+        return ScanSnapshot(
+            id: id,
+            filter: filter,
+            isActive: isActive,
+            startedAt: startedAt,
+            endedAt: endedAt,
+            peripherals: Array(matching.prefix(max(0, maxResults))),
+            matchedCount: matching.count,
+            seenCount: peripherals.count,
+            ignoredCount: ignored)
+    }
+}
+
+private struct Connection {
+    let id: PeripheralID
+    var name: String?
+    var state = ConnectionState.connecting
+    var connectedAt: Date?
+    var services: [GATTService]?
+    var discoveryError: BLEError?
+
+    init(id: PeripheralID, name: String?) {
+        self.id = id
+        self.name = name
+    }
+
+    mutating func markConnected(name: String?) {
+        state = .connected
+        connectedAt = .now
+        self.name = name ?? self.name
+    }
+}
+
+private struct Subscription {
+    let id: SubscriptionID
+    let address: CharacteristicAddress
+    let mode: NotificationMode
+    let createdAt = Date.now
+    var state = SubscriptionState.pending
+    var buffer: RingBuffer<ValueNotification>
+    var receivedCount = 0
+    var droppedCount = 0
+    var droppedSinceLastRead = 0
+
+    init(id: SubscriptionID, address: CharacteristicAddress, mode: NotificationMode, capacity: Int) {
+        self.id = id
+        self.address = address
+        self.mode = mode
+        buffer = RingBuffer(capacity: capacity)
+    }
+
+    var isOpen: Bool {
+        if case .closed = state { false } else { true }
+    }
+
+    mutating func record(_ notification: ValueNotification) {
+        receivedCount += 1
+        if buffer.append(notification) != nil {
+            droppedCount += 1
+            droppedSinceLastRead += 1
+        }
+    }
+
+    var snapshot: SubscriptionSnapshot {
+        SubscriptionSnapshot(
+            id: id,
+            address: address,
+            mode: mode,
+            state: state,
+            createdAt: createdAt,
+            receivedCount: receivedCount,
+            droppedCount: droppedCount,
+            bufferedCount: buffer.count)
+    }
+}
+
+private struct NotificationWaiter {
+    let token: UInt64
+    /// `nil` waits for any subscription.
+    let subscription: SubscriptionID?
+    let continuation: CheckedContinuation<Void, Never>
+
+    func isWaiting(for id: SubscriptionID) -> Bool {
+        subscription == nil || subscription == id
+    }
+}
