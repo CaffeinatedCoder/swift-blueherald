@@ -73,7 +73,7 @@ enum BLEMCPCommand {
                 "writes": "\(configuration.session.writePolicy.isEnabled)",
             ])
         do {
-            try await server.run(on: StdioTransport(logger: logger))
+            try await server.run(on: StdioServerTransport(logger: logger))
         } catch {
             logger.critical("server failed", metadata: ["error": "\(error)"])
             await session.shutdown()

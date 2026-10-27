@@ -83,6 +83,7 @@ BLEMCPCore           domain model, BLECentral protocol, BLESession actor (no pla
 - **`BLESession`** (actor) owns all state: scans, connections, subscriptions and their ring buffers. Everything leaves it as immutable snapshot values. Because actors are re-entrant, every method that suspends re-validates its preconditions afterwards and claims capacity *before* awaiting, so concurrent calls cannot overshoot a limit.
 - **`BLECentral`** is the backend seam: CoreBluetooth in production, a scripted `FakeCentral` in tests, BlueZ on Linux some day. Its contract is that every operation honours cancellation. The session enforces all timeouts in one place by racing the operation against a deadline in a task group.
 - **`CoreBluetoothCentral`** is an actor whose executor *is* CoreBluetooth's dispatch queue. Delegate callbacks enter it synchronously through `assumeIsolated`, with no locks and no hops. `CBPeripheral` calls run on the queue CoreBluetooth expects, and the non-`Sendable` CoreBluetooth objects never leave the actor. Pending requests are continuations in FIFO tables keyed by object identity, and each one is removed before it is resumed, so a callback, a timeout and a disconnect racing for the same request resume it exactly once. A single radio scan is shared by any number of scan consumers. Write-without-response honours CoreBluetooth's flow control.
+- **`StdioServerTransport`** replaces the SDK's stdio transport, which polls stdin every 10 ms. A dedicated thread waits in a blocking `read`, so an idle server costs no CPU and requests see no polling delay (median ping 0.05 ms instead of 13.7 ms). It is not kqueue-based because on macOS kqueue never reports end of file for named FIFOs. It never changes descriptor flags, which matters because stdin and stdout are shared with the launching process. Writes go through a dedicated serial queue, and a vanished client becomes an `EPIPE` error instead of a fatal `SIGPIPE`.
 - **Errors** are typed (`throws(BLEError)`) through the core and backend, and normalised once at each boundary.
 
 Swift features in use: Swift 6 language mode with complete concurrency checking, typed throws, `ExistentialAny`, `InternalImportsByDefault`, `MemberImportVisibility`, `NonisolatedNonsendingByDefault`, custom actor executors, `Mutex` and `Atomic` from `Synchronization`, `UInt128` (UUIDs are a single 128-bit value), `InlineArray`, and phantom-typed identifiers (`ScanID` and `SubscriptionID` cannot be mixed up). Tests use Swift Testing with parameterised cases.
@@ -95,7 +96,7 @@ Swift features in use: Swift 6 language mode with complete concurrency checking,
 
 ```bash
 swift build
-swift test                       # 55 tests, no Bluetooth hardware needed
+swift test                       # 65 tests, no Bluetooth hardware needed
 swift test --sanitize=thread
 npx @modelcontextprotocol/inspector .build/debug/ble-mcp
 ```
