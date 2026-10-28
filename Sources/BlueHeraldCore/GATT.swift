@@ -152,6 +152,35 @@ public enum NotificationMode: String, Hashable, Sendable {
 public struct ResolvedCharacteristic: Hashable, Sendable {
     public let address: CharacteristicAddress
     public let characteristic: GATTCharacteristic
+
+    /// Throws `propertyNotSupported` unless the characteristic has `property`; `name` is how the
+    /// error spells it.
+    public func require(_ property: CharacteristicProperties, named name: String) throws(BLEError) {
+        let properties = characteristic.properties
+        guard properties.contains(property) else {
+            throw .propertyNotSupported(characteristic: address.characteristic, required: name, available: properties.names)
+        }
+    }
+
+    /// The requested mode once the characteristic supports it. Without a request, a
+    /// characteristic that acknowledges writes gets an acknowledged write; the rest get a write
+    /// without response.
+    public func writeMode(requested: WriteMode?) throws(BLEError) -> WriteMode {
+        let mode = requested ?? (characteristic.properties.contains(.write) ? .withResponse : .withoutResponse)
+        switch mode {
+        case .withResponse: try require(.write, named: "write")
+        case .withoutResponse: try require(.writeWithoutResponse, named: "write_without_response")
+        }
+        return mode
+    }
+
+    /// Notifications when the characteristic offers them, else indications.
+    public func notificationMode() throws(BLEError) -> NotificationMode {
+        let properties = characteristic.properties
+        if properties.contains(.notify) { return .notify }
+        if properties.contains(.indicate) { return .indicate }
+        throw .propertyNotSupported(characteristic: address.characteristic, required: "notify or indicate", available: properties.names)
+    }
 }
 
 /// Resolves selectors against a discovered attribute table. Pure, so every ambiguity and
