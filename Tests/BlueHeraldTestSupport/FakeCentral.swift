@@ -81,14 +81,19 @@ public actor FakeCentral: BLECentral {
     private var maximumWriteLengths: (withResponse: Int, withoutResponse: Int) = (512, 20)
     private var responder: Responder?
     private var responseDelay = Duration.zero
-    private var held: Set<Checkpoint> = []
+    /// Held checkpoints, and whether a request held there survives the loss of its link.
+    private var held: [Checkpoint: Bool] = [:]
     /// How many calls are stopped at each checkpoint right now.
     public private(set) var waiting: [Checkpoint: Int] = [:]
+    /// Counts each peripheral's link losses, so a held request can tell that its link went.
+    private var linkGenerations: [PeripheralID: Int] = [:]
 
     /// A request a test can stop, to act while the session waits for it.
     public enum Checkpoint: Hashable, Sendable {
         case maximumWriteLength
         case write
+        case discoverServices
+        case descriptorRead
     }
 
     public init(state: CentralState = .poweredOn, devices: [Device] = []) {
@@ -135,12 +140,21 @@ public actor FakeCentral: BLECentral {
     }
 
     /// Stops every call of `checkpoint` from now on until `release`. Cancellation still ends it.
-    public func hold(_ checkpoint: Checkpoint) {
-        held.insert(checkpoint)
+    ///
+    /// A held request whose link drops meanwhile fails with `disconnected` once released, the way
+    /// CoreBluetoothCentral fails pending requests. With `survivingLinkLoss` it answers late
+    /// instead, as a backend without that guarantee might, even after a new link is up.
+    public func hold(_ checkpoint: Checkpoint, survivingLinkLoss: Bool = false) {
+        held[checkpoint] = survivingLinkLoss
     }
 
     public func release(_ checkpoint: Checkpoint) {
-        held.remove(checkpoint)
+        held[checkpoint] = nil
+    }
+
+    /// Changes the attribute table the device reports from now on, like a firmware update would.
+    public func setServices(_ services: [GATTService], of id: PeripheralID) {
+        devices[id]?.services = services
     }
 
     public func setMaximumWriteLengths(withResponse: Int, withoutResponse: Int) {
@@ -174,6 +188,7 @@ public actor FakeCentral: BLECentral {
 
     public func dropLink(to id: PeripheralID, reason: String? = "connection timeout") {
         guard connected.remove(id) != nil else { return }
+        linkGenerations[id, default: 0] += 1
         notifying = notifying.filter { $0.peripheral != id }
         eventSink.yield(.disconnected(id, reason: reason))
     }
@@ -181,6 +196,9 @@ public actor FakeCentral: BLECentral {
     public func changeState(to state: CentralState) {
         adapterState = state
         if state != .poweredOn {
+            for id in connected {
+                linkGenerations[id, default: 0] += 1
+            }
             connected.removeAll()
             notifying.removeAll()
         }
@@ -228,12 +246,17 @@ public actor FakeCentral: BLECentral {
 
     public func disconnect(_ id: PeripheralID) {
         disconnectRequests.append(id)
-        connected.remove(id)
+        if connected.remove(id) != nil {
+            linkGenerations[id, default: 0] += 1
+        }
         notifying = notifying.filter { $0.peripheral != id }
     }
 
-    public func discoverServices(of id: PeripheralID) throws(BLEError) -> [GATTService] {
-        try device(id).services
+    public func discoverServices(of id: PeripheralID) async throws(BLEError) -> [GATTService] {
+        // The table as it was when asked, even if the answer arrives late.
+        let services = try device(id).services
+        try await pass(.discoverServices, for: id)
+        return services
     }
 
     public func read(_ address: CharacteristicAddress) async throws(BLEError) -> Data {
@@ -242,7 +265,7 @@ public actor FakeCentral: BLECentral {
     }
 
     public func write(_ value: Data, to address: CharacteristicAddress, mode: WriteMode) async throws(BLEError) {
-        try await pass(.write)
+        try await pass(.write, for: address.peripheral)
         try await behave(writeBehavior)
         _ = try device(address.peripheral)
         devices[address.peripheral]?.values[address.characteristic] = value
@@ -266,6 +289,7 @@ public actor FakeCentral: BLECentral {
 
     public func read(_ address: DescriptorAddress) async throws(BLEError) -> Data {
         descriptorReads += 1
+        try await pass(.descriptorRead, for: address.characteristic.peripheral)
         try await behave(descriptorReadBehavior)
         let device = try device(address.characteristic.peripheral)
         if address.descriptor == GATTDescriptor.characteristicUserDescription,
@@ -301,7 +325,7 @@ public actor FakeCentral: BLECentral {
     }
 
     public func maximumWriteLength(for id: PeripheralID, mode: WriteMode) async throws(BLEError) -> Int {
-        try await pass(.maximumWriteLength)
+        try await pass(.maximumWriteLength, for: id)
         _ = try device(id)
         return mode == .withResponse ? maximumWriteLengths.withResponse : maximumWriteLengths.withoutResponse
     }
@@ -321,17 +345,21 @@ public actor FakeCentral: BLECentral {
         }
     }
 
-    private func pass(_ checkpoint: Checkpoint) async throws(BLEError) {
-        guard held.contains(checkpoint) else { return }
+    private func pass(_ checkpoint: Checkpoint, for peripheral: PeripheralID) async throws(BLEError) {
+        guard let survivesLinkLoss = held[checkpoint] else { return }
+        let generation = linkGenerations[peripheral, default: 0]
         waiting[checkpoint, default: 0] += 1
         defer { waiting[checkpoint, default: 1] -= 1 }
         // Polls, like `waitUntilPoweredOn`; a held request ends on cancellation like a hanging one.
-        while held.contains(checkpoint) {
+        while held[checkpoint] != nil {
             do {
                 try await Task.sleep(for: .milliseconds(1))
             } catch {
                 throw .cancelled
             }
+        }
+        if !survivesLinkLoss, linkGenerations[peripheral, default: 0] != generation {
+            throw .disconnected(peripheral, reason: "the link was lost while the request was pending")
         }
     }
 

@@ -126,6 +126,80 @@ struct SessionRaceTests {
         #expect(await session.connectionSnapshots().isEmpty)
     }
 
+    /// Connects without discovery, starts `discovery` with `checkpoint` held, then drops the link
+    /// and connects again while it waits. Returns the stale discovery, still held.
+    func discoveryAcrossReconnect(
+        _ session: BLESession,
+        holding checkpoint: FakeCentral.Checkpoint,
+        survivingLinkLoss: Bool = false,
+        beforeReconnecting change: @Sendable () async -> Void = {},
+        _ discovery: @escaping @Sendable () async throws -> [GATTService]
+    ) async throws -> Task<[GATTService], any Error> {
+        let (central, id) = (central, meter.id)
+        _ = try await session.connect(id, discover: false)
+        await central.hold(checkpoint, survivingLinkLoss: survivingLinkLoss)
+        let stale = Task { try await discovery() }
+        try await waitUntil { await central.waiting[checkpoint] == 1 }
+        await central.dropLink(to: id)
+        try await waitUntil { await session.connectionSnapshots().isEmpty }
+        await change()
+        _ = try await session.connect(id, discover: false)
+        return stale
+    }
+
+    @Test("a discovery that fails after a reconnect leaves no error on the new connection")
+    func staleDiscoveryError() async throws {
+        let session = BLESession(central: central)
+        await session.start()
+        let id = meter.id
+        let stale = try await discoveryAcrossReconnect(session, holding: .discoverServices) {
+            try await session.discoverServices(of: id, userDescriptions: false)
+        }
+        await central.release(.discoverServices)
+        await #expect(throws: BLEError.self) { try await stale.value }
+
+        let connection = try await session.connectionSnapshot(id)
+        #expect(connection.discoveryError == nil)
+        #expect(connection.services == nil)
+    }
+
+    @Test("a discovery answered after a reconnect does not give the new connection the old table")
+    func staleDiscoveryTable() async throws {
+        let session = BLESession(central: central)
+        await session.start()
+        let (central, id) = (central, meter.id)
+        // The device comes back with another table, as a bootloader would.
+        let bootloader = Fixtures.services.filter { $0.uuid == Fixtures.uartService }
+        let stale = try await discoveryAcrossReconnect(
+            session, holding: .discoverServices, survivingLinkLoss: true,
+            beforeReconnecting: { await central.setServices(bootloader, of: id) }
+        ) {
+            try await session.discoverServices(of: id, userDescriptions: false)
+        }
+        await central.release(.discoverServices)
+        _ = await stale.result
+
+        #expect(try await session.connectionSnapshot(id).services == nil)
+        let services = try await session.discoverServices(of: id, userDescriptions: false)
+        #expect(services.map(\.uuid) == [Fixtures.uartService])
+    }
+
+    @Test("names read partly over a dropped link do not stand in for the new connection's names")
+    func staleUserDescriptions() async throws {
+        let session = BLESession(central: central)
+        await session.start()
+        let id = meter.id
+        let stale = try await discoveryAcrossReconnect(session, holding: .descriptorRead) {
+            try await session.discoverServices(of: id, userDescriptions: true)
+        }
+        await central.release(.descriptorRead)
+        await #expect(throws: BLEError.self) { try await stale.value }
+
+        let services = try await session.discoverServices(of: id)
+        let names = services.flatMap(\.characteristics).compactMap(\.userDescription).sorted()
+        #expect(names == ["Battery", "Data In ", "Data Out"])
+    }
+
     @Test("a scan waiting for the adapter when the session shuts down never starts")
     func scanAfterShutdown() async throws {
         let central = FakeCentral(state: .unknown, devices: [meter])
