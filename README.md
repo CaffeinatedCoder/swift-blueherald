@@ -179,7 +179,7 @@ The script passes its environment on to the server, so it can also run against t
 BLE_MCP_REPLAY=/path/to/its/capture.jsonl swift Scripts/hardware-smoke.swift --name iPhone --read 2A29,2A19 --subscribe 2A2B
 ```
 
-Requires macOS 26 and Swift 6.2 or later.
+Requires macOS 26 and Swift 6.4 or later (Xcode 27).
 
 ## Contributing and security
 

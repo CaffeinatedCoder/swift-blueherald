@@ -10,7 +10,7 @@ swift build
 swift test            # no Bluetooth hardware needed
 ```
 
-Requires macOS 26 and Swift 6.2 or later. [AGENTS.md](AGENTS.md) is the architecture and rules guide
+Requires macOS 26 and Swift 6.4 or later (Xcode 27). [AGENTS.md](AGENTS.md) is the architecture and rules guide
 (layers, concurrency rules, the capture-format contract); read it before changing `BLESession`,
 `CoreBluetoothCentral`, the capture code or a tool.
 

@@ -13,7 +13,7 @@ swift format lint --strict -r Sources Tests Scripts Package.swift
 swift format -i -r Sources Tests Scripts Package.swift
 ```
 
-Requires macOS 26 and Swift 6.2 or later. Done means all five checks above pass, plus the hardware check below when it applies.
+Requires macOS 26 and Swift 6.4 or later (Xcode 27). Done means all five checks above pass, plus the hardware check below when it applies.
 
 ## Hardware check
 
