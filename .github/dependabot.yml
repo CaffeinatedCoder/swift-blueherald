@@ -1,0 +1,29 @@
+# Two ecosystems, on purpose narrow.
+#
+# github-actions keeps the SHA-pinned actions in the workflows current: a pin without an update path
+# just ages. Weekly, one grouped PR. Majors are excluded: a major is a deliberate change with a test
+# behind it, not a Monday PR.
+#
+# swift covers the two packages the server links, swift-sdk (the MCP SDK) and swift-log. Package.resolved
+# is committed, so an update is a reviewed diff of it. Monthly and grouped; the MCP SDK is pre-1.0, so
+# every update needs the full suite, the release-build hardware check and a look at the changelog.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: swift
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      swift-dependencies:
+        patterns: ["*"]

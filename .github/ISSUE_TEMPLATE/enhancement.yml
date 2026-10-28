@@ -1,0 +1,36 @@
+name: Enhancement
+description: A new tool, option, backend or device integration.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you're trying to do
+      description: The task, not the API. What do you do with the server today, and why doesn't it work?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you'd like
+      description: A sketch of the tool call or setting you'd use, and what comes back.
+  - type: dropdown
+    id: breaking
+    attributes:
+      label: Does it change something that exists today?
+      description: A changed tool name, argument or result, environment variable, or capture field is breaking, even when the new behaviour is better.
+      options:
+        - No, it only adds
+        - Yes, an existing tool, setting or capture field would change
+        - I'm not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: writes
+    attributes:
+      label: Does it write to a device?
+      options:
+        - No
+        - Yes
+    validations:
+      required: true

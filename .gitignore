@@ -16,3 +16,4 @@ DerivedData/
 
 # Captures written while trying the server out (Tests/**/Fixtures are tracked)
 /ble-mcp-*.jsonl
+/.claude/worktrees/

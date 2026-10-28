@@ -1,0 +1,31 @@
+# Every PR carries one type label, a severity if it is a bug, and a closing reference to the issue
+# it resolves (CONTRIBUTING.md#issues). The rules live in .github/scripts/pr-hygiene.sh, which reads
+# the event payload only: no token, nothing of the PR's executed, and runnable locally.
+#
+# Triggered on label and description edits as well as pushes, so adding the missing label turns the
+# check green without a new commit. `pull_request`, not `pull_request_target`: a PR from a fork runs
+# with a read-only token and never sees a secret.
+
+name: PR hygiene
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, reopened, synchronize, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-hygiene-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Labels and issue link
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+      - run: .github/scripts/pr-hygiene.sh "$GITHUB_EVENT_PATH"

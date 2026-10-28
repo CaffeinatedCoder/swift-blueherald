@@ -1,0 +1,63 @@
+name: Bug
+description: Something answers wrongly, throws when it shouldn't, or doesn't throw when it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The bugs that matter most here don't crash. A read returns the wrong value, a reply is paired
+        with the wrong request, or a write sends bytes nobody wrote, and the agent gets a confident
+        answer. If that's what you found, please say so below. It decides how urgent the fix is.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `ble-mcp --version`, or the commit.
+    validations:
+      required: true
+  - type: dropdown
+    id: failure
+    attributes:
+      label: How does it fail?
+      options:
+        - Silently. It returns a plausible value that is wrong, or writes something unintended
+        - Loudly. It throws, hangs or crashes where it should work
+        - I'm not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Where does it happen?
+      options:
+        - Against a real peripheral (CoreBluetooth)
+        - In a replay (BLE_MCP_REPLAY)
+        - In a capture or in ble-mcp diff
+        - Only in a release build
+        - I'm not sure
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: What you ran
+      description: The tool calls, in order, with arguments. For a hardware-only bug, the peripheral and its attribute table (`ble_discover`). A capture file that shows it is the best reproduction; remove anything private from it first.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What you got
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: macOS and Swift versions, the MCP client, and the relevant `BLE_MCP_*` settings.

@@ -181,6 +181,10 @@ BLE_MCP_REPLAY=/path/to/its/capture.jsonl swift Scripts/hardware-smoke.swift --n
 
 Requires macOS 26 and Swift 6.2 or later.
 
+## Contributing and security
+
+[CONTRIBUTING.md](CONTRIBUTING.md) describes the quality bar (a fix is proven by reverting it, CoreBluetooth changes by a release build against a real peripheral), the issue labels and how AI assistance is used in this repository. [AGENTS.md](AGENTS.md) is the guide for agents and contributors. Report vulnerabilities as [SECURITY.md](SECURITY.md) describes.
+
 ## Limitations
 
 - Bluetooth on macOS only. The core, the MCP layer and replays are platform-neutral, but no Linux (BlueZ) backend exists yet.

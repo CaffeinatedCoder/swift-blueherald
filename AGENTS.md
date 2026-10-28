@@ -26,6 +26,24 @@ swift Scripts/hardware-smoke.swift --name <advertised name> --read 2A29,2A19
 
 Debug builds have passed while release builds crashed. The script is read-only unless you pass `--transact`, which allows exactly one frame. Each rebuilt binary triggers the macOS Bluetooth permission prompt, which only a person can answer; a failing "scan finds the peripheral" step is usually the peripheral not advertising, not a bug. Never write to a characteristic you do not own: restrict writes with `BLE_MCP_WRITE_VALUE_ALLOWLIST` to exact frames.
 
+## Workflow
+
+1. Read the code you are about to change and the rules below. Anything around `BLESession`,
+   `CoreBluetoothCentral`, `PendingOperations`, value parsing, the write policy, capture or replay
+   gets the [`ble-semantics-review`](.claude/skills/ble-semantics-review/SKILL.md) lens first.
+2. Run `swift test` after each change; `FakeCentral` can delay, reorder, fail and drop links, so make
+   it misbehave when the code is about concurrency.
+3. **Prove every fix by reverting it.** Strip only the fix, confirm the new test fails for the expected
+   reason, restore ([`verify-the-guard`](.claude/skills/verify-the-guard/SKILL.md)). A test that passes
+   with and without the fix is not a regression test, and one written against broken code can assert
+   nothing without looking any different. The same goes for a new convention test: seed the defect it
+   claims to catch. Report the counterfactual result, not just "added a test".
+4. **Finding bugs is systematic, not one-off.** Before a release, or after a larger change, run a bug
+   sweep (the `bug-sweep` skill, or the `code-analyst` agent on the diff) and verify each finding
+   yourself before filing it. A hardware smoke pass on a release build comes last
+   ([`hardware-verify`](.claude/skills/hardware-verify/SKILL.md)).
+5. Commit as described under [Style and commits](#style-and-commits).
+
 ## Layout and rules
 
 ```
@@ -60,9 +78,28 @@ Advertised names, 0x2901 descriptions and value text come from devices and end u
 
 `BLE_MCP_CAPTURE` writes JSONL that swift-dragoman's `CaptureLog` loads as a test fixture (`t`, `dir` of `tx`/`rx`/`info`, `uuid` in lowercase short form, lowercase `hex`, optional `note` and scalar marker fields). The format is a contract with that package: nested values in `info` rows are fine because `CaptureLog` skips them, but never rename or retype an existing field. Replays and `ble-mcp diff` must keep reading older captures. The README's "Capturing a session" and "Replaying a capture" sections are the specification.
 
+## Issues
+
+Work is tracked as GitHub issues, not as lists in docs or memory. Open the issue before starting the
+work and close it from the PR (`Closes #n`). The labels, on issues and PRs alike, are defined in
+`.github/labels.json` and explained in [CONTRIBUTING.md](CONTRIBUTING.md#issues): exactly one type, every
+`area/*` the change touches, `severity/*` on a bug, `silent` for a bug that answers wrongly without an
+error, `breaking` for a change to a tool, an environment variable or the capture format,
+`needs-hardware`, and `stacked` on a PR whose base is another open PR. A PR carries its issue's labels
+and milestone. A release is an `epic` with a milestone, and its work is attached as sub-issues. The
+repository has no remote yet; once it has one, create the labels with `.github/scripts/sync-labels.sh`.
+
 ## Style and commits
 
 - `.swift-format` is authoritative (4 spaces, 140 columns). Run the formatter instead of arguing with it.
 - Match the surrounding code's comment density: comments say why, not what.
 - Commit subjects are imperative and say what changed for the user; the body says why, what was measured and which checks ran (debug, ThreadSanitizer, release, hardware). One concern per commit.
+- A fix commit ends with `Found-By:` and `Defect-Class:` trailers; the codes are in
+  [CONTRIBUTING.md](CONTRIBUTING.md#commit-trailers).
 - Do not commit `.idea/`, `.index-build/` or `.claude/agent-memory-local/`.
+
+## Skills
+
+Project skills live in `.claude/skills/`: `verify-the-guard` (prove a test fails without the fix),
+`ble-semantics-review` (the lens for answers that look right and are wrong), and `hardware-verify`
+(the release-build smoke check against a real peripheral).
