@@ -18,7 +18,7 @@ struct ValueReport: Encodable {
         serviceUuid = reading.address.service.description
         characteristicUuid = reading.address.characteristic.description
         characteristicName = AssignedNumbers.name(for: reading.address.characteristic)
-        characteristicDescription = reading.userDescription
+        characteristicDescription = DeviceText.clean(reading.userDescription)
         descriptorUuid = nil
         descriptorName = nil
         value = Bytes(reading.value)

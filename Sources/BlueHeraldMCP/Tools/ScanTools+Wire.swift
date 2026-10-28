@@ -29,7 +29,7 @@ struct DeviceSummary: Encodable {
 
     init(_ peripheral: DiscoveredPeripheral) {
         peripheralId = peripheral.id.description
-        name = peripheral.name
+        name = DeviceText.clean(peripheral.name)
         rssi = peripheral.rssi
         strongestRssi = peripheral.strongestRSSI
         connectable = peripheral.isConnectable

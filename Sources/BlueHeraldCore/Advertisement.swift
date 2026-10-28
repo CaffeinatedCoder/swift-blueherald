@@ -4,7 +4,7 @@ public import Foundation
 public struct Advertisement: Hashable, Sendable {
     public let peripheral: PeripheralID
     /// The advertised local name, falling back to the GAP name the platform has cached.
-    /// Cleaned with `DeviceText`.
+    /// As the device supplies it: untrusted, see `DeviceText`.
     public let name: String?
     /// `nil` when the controller reported no usable RSSI (CoreBluetooth's 127).
     public let rssi: Int?
@@ -27,7 +27,7 @@ public struct Advertisement: Hashable, Sendable {
         receivedAt: Date = Date()
     ) {
         self.peripheral = peripheral
-        self.name = DeviceText.clean(name)
+        self.name = name
         self.rssi = rssi
         self.isConnectable = isConnectable
         self.serviceUUIDs = serviceUUIDs
@@ -100,7 +100,8 @@ public struct DiscoveredPeripheral: Hashable, Sendable, Identifiable {
 
 /// Which peripherals a scan reports. Every criterion that is set must match.
 public struct ScanFilter: Hashable, Sendable {
-    /// Case- and diacritic-insensitive substring of the peripheral name.
+    /// Case- and diacritic-insensitive substring of the peripheral name as `DeviceText` shows it,
+    /// so a filter typed from a listed name matches even if the raw name hides invisible characters.
     public let nameContains: String?
     /// Matches when the peripheral advertises any of these services. Empty means no constraint.
     public let serviceUUIDs: Set<BLEUUID>
@@ -127,7 +128,7 @@ public struct ScanFilter: Hashable, Sendable {
 
     public func matches(_ peripheral: DiscoveredPeripheral) -> Bool {
         if let nameContains {
-            guard let name = peripheral.name,
+            guard let name = DeviceText.visible(peripheral.name),
                 name.range(of: nameContains, options: [.caseInsensitive, .diacriticInsensitive]) != nil
             else { return false }
         }

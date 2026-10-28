@@ -96,13 +96,13 @@ struct BLESessionTests {
             })
     }
 
-    @Test("connecting reads the 0x2901 names, trimmed")
+    @Test("connecting reads the 0x2901 names, without their NUL padding but otherwise as sent")
     func userDescriptionsOnConnect() async throws {
         let session = await makeSession()
         let connection = try await session.connect(meter.id)
         #expect(
             descriptions(connection.services) == [
-                Fixtures.batteryLevel: "Battery", Fixtures.uartRX: "Data In", Fixtures.uartTX: "Data Out",
+                Fixtures.batteryLevel: "Battery", Fixtures.uartRX: "Data In ", Fixtures.uartTX: "Data Out",
             ])
         #expect(await central.descriptorReads == 3)
     }
@@ -424,8 +424,6 @@ struct BLESessionTests {
         let status = await session.status()
         #expect(status.adapterState == .awaitingPermission)
         #expect(clock.now - start < .seconds(5))
-        #expect(BLEError.bluetoothUnavailable(.awaitingPermission).hint?.contains("accept the prompt") == true)
-        #expect(BLEError.bluetoothUnavailable(.unknown).hint?.contains("permission") == false)
     }
 
     @Test("status gives up on an adapter that stays silent")

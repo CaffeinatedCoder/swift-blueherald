@@ -50,7 +50,7 @@ public enum CaptureValue: Hashable, Sendable {
 /// The session calls `record` on its own executor, so implementations hand the event off (to a
 /// queue, say) instead of doing I/O in the call.
 public protocol CaptureSink: Sendable {
-    /// Where the capture goes, shown by `ble_status`.
+    /// Where the capture goes, for a status report.
     var destination: String { get }
 
     func record(_ event: CaptureEvent)

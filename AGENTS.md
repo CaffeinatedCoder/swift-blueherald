@@ -58,7 +58,8 @@ BlueHeraldCore           domain model, BLECentral protocol, BLESession actor (no
 - Every module keeps the `BlueHerald` prefix so the package links next to swift-dragoman (`DragomanCore`, `DragomanCoreBluetooth`, `DragomanTesting`, ...). Never add a module name that collides with it.
 - `BLESession` is an actor and actors are re-entrant: every method that suspends must re-validate its preconditions afterwards and claim capacity *before* awaiting.
 - Pass isolation explicitly to `withTaskCancellationHandler(operation:onCancel:isolation:)` (`isolation: self`). The `nonisolated(nonsending)` overload loses the hop back to the actor in optimised builds on Swift 6.4 ([swiftlang/swift#92915](https://github.com/swiftlang/swift/issues/92915)). No actor-isolated closure may be converted to a caller-isolated one.
-- Errors are typed (`throws(BLEError)`) and carry a stable snake_case `code` and, where there is a next step, a `hint`. A new failure gets a case, a code and a test, not a string.
+- Errors are typed (`throws(BLEError)`) and carry a stable snake_case `code`; where there is a next step, `BlueHeraldMCP/BLEError+Hint.swift` adds a `hint`. A new failure gets a case, a code and a test, not a string.
+- `BlueHeraldCore` names no tool and no `BLUEHERALD_` variable (`CoreBoundaryTests` checks). Session-only types live in `Sources/BlueHeraldCore/Session/`.
 - Tool arguments are declared once as a `ToolArgument`, which produces both the JSON schema and the parsing. Do not parse arguments by hand.
 - Values are immutable, `Sendable` and typed; use phantom-typed identifiers rather than bare strings or UUIDs. Avoid `[String: Any]` and `JSONSerialization`. Justify any new dependency against performance, immutability and robustness.
 - Newest language features first (Swift 6 mode, typed throws, `Synchronization`, upcoming features as enabled in `Package.swift`).
@@ -73,7 +74,7 @@ BlueHeraldCore           domain model, BLECentral protocol, BLESession actor (no
 
 ## Device data is untrusted
 
-Advertised names, 0x2901 descriptions and value text come from devices and end up in the model's context. Clean text where it enters the server (`DeviceText`), keep `hex` as the authoritative value, and keep telling the agent in the server instructions and tool descriptions that it is data, never instructions. A capture or replay file is device data too.
+Advertised names, 0x2901 descriptions and value text come from devices and end up in the model's context. The core keeps it raw; clean it with `DeviceText` wherever it leaves the server (a tool result, a log event, a capture row), keep `hex` as the authoritative value, and keep telling the agent in the server instructions and tool descriptions that it is data, never instructions. A capture or replay file is device data too.
 
 ## Captures
 

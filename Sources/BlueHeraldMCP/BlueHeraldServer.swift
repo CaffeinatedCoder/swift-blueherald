@@ -113,7 +113,7 @@ public struct BlueHeraldServer: Sendable {
                         [
                             "event": "peripheral_disconnected",
                             "peripheral_id": .string(id.description),
-                            "name": name.map(Value.string) ?? .null,
+                            "name": DeviceText.clean(name).map(Value.string) ?? .null,
                             "reason": reason.map(Value.string) ?? .null,
                         ]
                     )

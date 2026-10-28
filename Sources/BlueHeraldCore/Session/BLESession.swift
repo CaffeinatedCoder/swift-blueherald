@@ -437,9 +437,10 @@ public actor BLESession {
         return described
     }
 
-    /// 0x2901 holds UTF-8 text; devices often pad it with NULs or spaces.
+    /// 0x2901 holds UTF-8 text; devices often pad it with NULs. Kept raw otherwise: whoever shows
+    /// it cleans it with `DeviceText`.
     private static func userDescriptionText(_ value: Data) -> String? {
-        DeviceText.clean(String(validating: value.reversed().drop { $0 == 0 }.reversed(), as: UTF8.self))
+        String(validating: value.reversed().drop { $0 == 0 }.reversed(), as: UTF8.self).flatMap { $0.isEmpty ? nil : $0 }
     }
 
     public func read(_ selector: CharacteristicSelector) async throws(BLEError) -> CharacteristicValue {
