@@ -57,6 +57,7 @@ BlueHeraldCore           domain model, BLECentral protocol, BLESession actor (no
 - Dependencies point downwards only. `BlueHeraldCore` imports nothing platform-specific and has no dependencies.
 - Every module keeps the `BlueHerald` prefix so the package links next to swift-dragoman (`DragomanCore`, `DragomanCoreBluetooth`, `DragomanTesting`, ...). Never add a module name that collides with it.
 - `BLESession` is an actor and actors are re-entrant: every method that suspends must re-validate its preconditions afterwards and claim capacity *before* awaiting.
+- A task that is kept (in a property or a local) gets a name, `Task(name:)`, for Instruments and crash logs; `TaskNameConventionTests` checks. Cancellation hops stay plain `Task {}`: `Task.immediate` was measured in #3 and resolved cancelled waits no sooner.
 - Pass isolation explicitly to `withTaskCancellationHandler(operation:onCancel:isolation:)` (`isolation: self`). The `nonisolated(nonsending)` overload loses the hop back to the actor in optimised builds on Swift 6.4 ([swiftlang/swift#92915](https://github.com/swiftlang/swift/issues/92915)). No actor-isolated closure may be converted to a caller-isolated one.
 - Errors are typed (`throws(BLEError)`) and carry a stable snake_case `code`; where there is a next step, `BlueHeraldMCP/BLEError+Hint.swift` adds a `hint`. A new failure gets a case, a code and a test, not a string.
 - `BlueHeraldCore` names no tool and no `BLUEHERALD_` variable (`CoreBoundaryTests` checks). Session-only types live in `Sources/BlueHeraldCore/Session/`.

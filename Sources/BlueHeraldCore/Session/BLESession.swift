@@ -46,7 +46,7 @@ public actor BLESession {
     public func start() {
         guard eventPump == nil, !isShutDown else { return }
         let backendEvents = central.events
-        eventPump = Task { [weak self] in
+        eventPump = Task(name: "blueherald.session.events") { [weak self] in
             for await event in backendEvents {
                 guard let self else { return }
                 await self.handle(event)
@@ -140,14 +140,14 @@ public actor BLESession {
 
         let id = scans.nextID()
         var scan = ActiveScan(id: id, filter: filter, stopAfter: stopAfter)
-        scan.consumer = Task { [weak self] in
+        scan.consumer = Task(name: "blueherald.\(id).advertisements") { [weak self] in
             for await advertisement in stream {
                 guard let self else { return }
                 await self.record(advertisement, in: id)
             }
         }
         if let duration {
-            scan.timer = Task { [weak self] in
+            scan.timer = Task(name: "blueherald.\(id).timer") { [weak self] in
                 try? await Task.sleep(for: duration)
                 guard !Task.isCancelled else { return }
                 await self?.finishScan(id)
@@ -587,7 +587,7 @@ public actor BLESession {
 
     private func waitForNotification(on id: SubscriptionID?, timeout: Duration) async {
         let token = waiters.nextToken()
-        let timer = Task { [weak self] in
+        let timer = Task(name: "blueherald.notification-wait.timer") { [weak self] in
             try? await Task.sleep(for: timeout)
             await self?.resumeWaiter(token)
         }

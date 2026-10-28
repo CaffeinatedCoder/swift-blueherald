@@ -94,7 +94,7 @@ public struct BlueHeraldServer: Sendable {
         await session.start()
         let server = await makeServer()
         try await server.start(transport: transport)
-        let forwarding = Task { await forwardEvents(to: server) }
+        let forwarding = Task(name: "blueherald.server.events") { await forwardEvents(to: server) }
         await server.waitUntilCompleted()
         forwarding.cancel()
         await session.shutdown()
