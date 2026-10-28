@@ -1,6 +1,6 @@
 # swift-ble-mcp
 
-A Bluetooth Low Energy [Model Context Protocol](https://modelcontextprotocol.io) server for macOS, written in Swift 6. It lets an AI agent scan for BLE devices, connect, explore their GATT tables, read and write characteristics, stream notifications and record everything as a replayable JSONL capture, all through 18 typed MCP tools.
+A Bluetooth Low Energy [Model Context Protocol](https://modelcontextprotocol.io) server for macOS, written in Swift 6. It lets an AI agent scan for BLE devices, connect, explore their GATT tables, read and write characteristics, stream notifications and record everything as a replayable JSONL capture, all through 19 typed MCP tools.
 
 It is inspired by [es617/ble-mcp-server](https://github.com/es617/ble-mcp-server) and [Hypijump31/bluetooth-mcp-server](https://github.com/Hypijump31/bluetooth-mcp-server), and built natively on CoreBluetooth and the official [MCP Swift SDK](https://github.com/modelcontextprotocol/swift-sdk).
 
@@ -42,6 +42,7 @@ Development builds are ad-hoc signed, so each rebuild is a new identity to macOS
 | `ble_discover` | Services, characteristics (with properties) and descriptors, with names for well-known UUIDs and each characteristic's own 0x2901 user description |
 | `ble_read` / `ble_read_descriptor` | Values as hex, plus UTF-8 text when printable |
 | `ble_write` / `ble_write_descriptor` | Only listed when writes are enabled; `value` in hex, base64 or utf8 |
+| `ble_transact` | Only listed when writes are enabled. Writes a frame and returns the device's reply, the first notification on `reply_uuid` after the write (optionally starting with `reply_prefix`), with its latency, in one call. The reply characteristic is subscribed to before the write, so a fast answer is never missed |
 | `ble_subscribe` / `ble_unsubscribe` | Notifications and indications into a bounded per-subscription buffer |
 | `ble_notifications` | Drains buffered values in arrival order across subscriptions; `wait_ms` blocks until data arrives instead of polling, and `note` says when there was no open subscription to wait on |
 | `ble_rssi` | Signal strength of a connected peripheral |
@@ -137,7 +138,7 @@ swift build -c release
 swift Scripts/hardware-smoke.swift --name iPhone --read 2A29,2A19 --subscribe 2A2B
 ```
 
-It scans, connects, reads, subscribes, disconnects, stops the server with SIGTERM while connected and checks the capture it wrote.
+It scans, connects, reads, subscribes, disconnects, stops the server with SIGTERM while connected and checks the capture it wrote. `--transact ff01:abcd03fd0278:ff02:abcd04ff` adds one request/reply exchange; only then does the script write, and the server it starts allows exactly that frame.
 
 Requires macOS 26 and Swift 6.2 or later.
 

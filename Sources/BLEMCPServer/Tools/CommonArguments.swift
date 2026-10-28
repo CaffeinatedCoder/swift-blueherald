@@ -46,6 +46,10 @@ enum CommonArguments {
     static let encoding = Argument.optional(
         "encoding", as: PayloadEncoding.self, "How `value` is spelled.", default: .hex)
 
+    static let writeMode = Argument.optional(
+        "mode", as: WriteMode.self,
+        "with_response waits for the peripheral's acknowledgement; without_response is faster but unconfirmed. Defaults to with_response when the characteristic supports it.")
+
     static let characteristicTarget: [any ArgumentDeclaration] = [peripheral, characteristic, service]
 
     static func selector(_ arguments: ToolArguments) throws(ToolError) -> CharacteristicSelector {

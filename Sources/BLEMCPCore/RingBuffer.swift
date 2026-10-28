@@ -43,6 +43,24 @@ public struct RingBuffer<Element> {
         return element
     }
 
+    /// The elements, oldest first.
+    public var elements: [Element] {
+        (0..<count).map { storage[(head + $0) % capacity]! }
+    }
+
+    /// Removes and returns the oldest element that satisfies `predicate`; the rest keep their order.
+    public mutating func removeFirst(where predicate: (Element) throws -> Bool) rethrows -> Element? {
+        guard let offset = try elements.firstIndex(where: predicate) else { return nil }
+        let removed = storage[(head + offset) % capacity]
+        // Close the gap by shifting the newer elements one slot towards the head.
+        for position in offset..<(count - 1) {
+            storage[(head + position) % capacity] = storage[(head + position + 1) % capacity]
+        }
+        storage[(head + count - 1) % capacity] = nil
+        count -= 1
+        return removed
+    }
+
     public mutating func removeAll() {
         storage = Array(repeating: nil, count: capacity)
         head = 0

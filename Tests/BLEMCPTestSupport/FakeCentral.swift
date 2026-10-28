@@ -48,6 +48,9 @@ public actor FakeCentral: BLECentral {
         case hang
     }
 
+    /// Answers a write with notifications, the way request/reply devices do.
+    public typealias Responder = @Sendable (CharacteristicAddress, Data) -> [(CharacteristicAddress, Data)]
+
     public struct Write: Hashable, Sendable {
         public let address: CharacteristicAddress
         public let descriptor: BLEUUID?
@@ -74,6 +77,8 @@ public actor FakeCentral: BLECentral {
     private var writeBehavior = Behavior.succeed
     private var descriptorReadBehavior = Behavior.succeed
     private var maximumWriteLengths: (withResponse: Int, withoutResponse: Int) = (512, 20)
+    private var responder: Responder?
+    private var responseDelay = Duration.zero
 
     public init(state: CentralState = .poweredOn, devices: [Device] = []) {
         let (events, eventSink) = AsyncStream.makeStream(of: CentralEvent.self)
@@ -101,6 +106,14 @@ public actor FakeCentral: BLECentral {
 
     public func setDescriptorReadBehavior(_ behavior: Behavior) {
         descriptorReadBehavior = behavior
+    }
+
+    /// Every characteristic write runs `responder`; what it returns is notified after `delay`.
+    /// With no delay the replies go out before the write returns, like a device that answers
+    /// faster than its acknowledgement arrives.
+    public func setResponder(delay: Duration = .zero, _ responder: Responder?) {
+        self.responder = responder
+        responseDelay = delay
     }
 
     public func setMaximumWriteLengths(withResponse: Int, withoutResponse: Int) {
@@ -206,6 +219,17 @@ public actor FakeCentral: BLECentral {
         _ = try device(address.peripheral)
         devices[address.peripheral]?.values[address.characteristic] = value
         writes.append(Write(address: address, descriptor: nil, value: value, mode: mode))
+        for (replyAddress, reply) in responder?(address, value) ?? [] {
+            if responseDelay == .zero {
+                notify(reply, from: replyAddress)
+            } else {
+                let delay = responseDelay
+                Task {
+                    try? await Task.sleep(for: delay)
+                    notify(reply, from: replyAddress)
+                }
+            }
+        }
     }
 
     public func read(_ address: DescriptorAddress) async throws(BLEError) -> Data {

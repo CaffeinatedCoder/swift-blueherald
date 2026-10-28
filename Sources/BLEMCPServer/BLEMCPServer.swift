@@ -22,6 +22,7 @@ public struct BLEMCPServer: Sendable {
         ConnectionTools.discover,
         AttributeTools.read,
         AttributeTools.write,
+        AttributeTools.transact,
         AttributeTools.readDescriptor,
         AttributeTools.writeDescriptor,
         NotificationTools.subscribe,

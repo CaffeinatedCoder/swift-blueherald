@@ -114,6 +114,22 @@ public struct DescriptorValue: Sendable {
     public let readAt: Date
 }
 
+/// A write and the notification that answered it.
+public struct Transaction: Sendable {
+    public let write: WriteReceipt
+    /// The first notification on the reply characteristic after the write that matched, taken
+    /// out of the subscription's buffer. `nil` when none arrived before the timeout.
+    public let reply: ValueNotification?
+    /// From just before the write to the reply's arrival.
+    public let latency: Duration?
+    /// Notifications on the reply characteristic after the write that did not match. They stay
+    /// buffered for `notifications`.
+    public let unmatched: Int
+    /// The reply subscription after the exchange; it stays open for the next one.
+    public let subscription: SubscriptionSnapshot
+    public let timeout: Duration
+}
+
 public struct WriteReceipt: Sendable {
     public let address: CharacteristicAddress
     /// Set for descriptor writes.

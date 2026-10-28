@@ -261,6 +261,62 @@ struct ValueReport: Encodable {
     }
 }
 
+struct TransactReport: Encodable {
+    struct Reply: Encodable {
+        let serviceUuid: String
+        let characteristicUuid: String
+        let seq: UInt64
+        let receivedAt: Date
+        let latencyMs: Int?
+        let value: Bytes
+    }
+
+    let peripheralId: String
+    let serviceUuid: String
+    let characteristicUuid: String
+    let bytesWritten: Int
+    let mode: String?
+    let reply: Reply?
+    /// Notifications on the reply characteristic after the write that did not match; still buffered.
+    let unmatched: Int
+    let subscriptionId: String
+    let note: String?
+
+    init(_ transaction: Transaction, prefix: Data) {
+        let write = transaction.write
+        peripheralId = write.address.peripheral.description
+        serviceUuid = write.address.service.description
+        characteristicUuid = write.address.characteristic.description
+        bytesWritten = write.byteCount
+        mode = write.mode?.rawValue
+        reply = transaction.reply.map {
+            Reply(
+                serviceUuid: $0.address.service.description,
+                characteristicUuid: $0.address.characteristic.description,
+                seq: $0.sequence,
+                receivedAt: $0.receivedAt,
+                latencyMs: transaction.latency.map { Int(($0 / .milliseconds(1)).rounded()) },
+                value: Bytes($0.value))
+        }
+        unmatched = transaction.unmatched
+        subscriptionId = transaction.subscription.id.description
+        let others =
+            transaction.unmatched == 0
+            ? ""
+            : transaction.unmatched == 1
+                ? " 1 other notification arrived and stays readable with ble_notifications."
+                : " \(transaction.unmatched) other notifications arrived and stay readable with ble_notifications."
+        if transaction.reply == nil {
+            let characteristic = transaction.subscription.address.characteristic
+            let matching = prefix.isEmpty ? "" : " starting with \(Hex.encode(prefix))"
+            let waited = Int((transaction.timeout / .milliseconds(1)).rounded())
+            note = "The frame was written, but no reply on \(characteristic)\(matching) arrived within \(waited) ms." + others
+        } else {
+            note = others.isEmpty ? nil : String(others.dropFirst())
+        }
+    }
+}
+
 struct WriteReport: Encodable {
     let peripheralId: String
     let serviceUuid: String

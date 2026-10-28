@@ -530,6 +530,55 @@ public actor BLESession {
         }
     }
 
+    // MARK: - Request and reply
+
+    /// Writes `value` and waits up to `timeout` for the device's answer: the first notification
+    /// on `replySelector` after the write that starts with `prefix`.
+    ///
+    /// The reply characteristic is subscribed to before the write, so even an immediate answer is
+    /// caught, and the subscription stays open so the next exchange is just as safe. The reply is
+    /// taken out of the buffer; anything else that arrived stays readable with `notifications`.
+    /// Not having an answer is not an error: the write happened, and the result says so.
+    public func transact(
+        _ value: Data,
+        to selector: CharacteristicSelector,
+        mode: WriteMode? = nil,
+        replyOn replySelector: CharacteristicSelector,
+        prefix: Data = Data(),
+        timeout: Duration
+    ) async throws(BLEError) -> Transaction {
+        // Policy first, as in `write`: a refused frame must not even cause a subscription.
+        try configuration.writePolicy.checkWrite(value, to: selector.characteristic)
+        let id = try await subscribe(replySelector).id
+        let mark = lastSequence
+        let sentAt = Date.now
+        let receipt = try await write(value, to: selector, mode: mode)
+
+        let clock = ContinuousClock()
+        let deadline = clock.now + timeout
+        var reply = takeReply(on: id, after: mark, prefix: prefix)
+        while reply == nil, subscriptions[id]?.isOpen == true, clock.now < deadline {
+            await waitForNotification(on: id, timeout: deadline - clock.now)
+            reply = takeReply(on: id, after: mark, prefix: prefix)
+        }
+        if reply == nil, subscriptions[id]?.isOpen != true {
+            // The link went while waiting; say so rather than reporting a silent device.
+            _ = try requireConnected(replySelector.peripheral)
+        }
+        guard let subscription = subscriptions[id] else { throw .subscriptionNotFound(id) }
+        return Transaction(
+            write: receipt,
+            reply: reply,
+            latency: reply.map { .milliseconds(Int(($0.receivedAt.timeIntervalSince(sentAt) * 1000).rounded())) },
+            unmatched: subscription.buffer.elements.count { $0.sequence > mark && !$0.value.starts(with: prefix) },
+            subscription: subscription.snapshot,
+            timeout: timeout)
+    }
+
+    private func takeReply(on id: SubscriptionID, after mark: UInt64, prefix: Data) -> ValueNotification? {
+        subscriptions[id]?.buffer.removeFirst { $0.sequence > mark && $0.value.starts(with: prefix) }
+    }
+
     // MARK: - Subscriptions
 
     /// Enables notifications (or indications) and starts buffering them. Subscribing to a

@@ -11,10 +11,17 @@
 //   --peripheral ID      or connect to a peripheral id this Mac already knows
 //   --read UUIDS         comma-separated characteristics to read (default: 2A29)
 //   --subscribe UUID     a notify/indicate characteristic to subscribe to (optional)
+//   --transact C:HEX:R[:PREFIX]
+//                        write the frame HEX to characteristic C with ble_transact and expect a
+//                        reply on R (starting with PREFIX); the only write the script ever makes
 //   --binary PATH        the server to test (default: .build/release/ble-mcp)
 //
-// It never writes to the device. The binary needs Bluetooth permission. Exit status 0 means
-// every check passed.
+// Without --transact it never writes to the device; with it, the server is started with exactly
+// that one frame on its write allowlist. For a Voltcraft BB-500, the harmless known-device auth:
+//
+//   swift Scripts/hardware-smoke.swift --name BB --read 2A29 --transact ff01:abcd03fd0278:ff02:abcd04ff
+//
+// The binary needs Bluetooth permission. Exit status 0 means every check passed.
 
 import Foundation
 
@@ -26,6 +33,7 @@ struct Options {
     var peripheral: String?
     var reads = ["2A29"]
     var subscribe: String?
+    var transact: (characteristic: String, frame: String, reply: String, prefix: String?)?
 
     init(_ arguments: [String]) {
         var remaining = arguments.dropFirst()[...]
@@ -37,6 +45,10 @@ struct Options {
             case "--peripheral": peripheral = value
             case "--read": reads = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
             case "--subscribe": subscribe = value
+            case "--transact":
+                let parts = value.split(separator: ":").map(String.init)
+                guard (3...4).contains(parts.count) else { Self.usage("--transact takes CHAR:HEX:REPLY[:PREFIX]") }
+                transact = (parts[0], parts[1], parts[2], parts.count == 4 ? parts[3] : nil)
             default: Self.usage("unknown option \(flag)")
             }
         }
@@ -156,10 +168,13 @@ let log = workspace.appendingPathComponent("server.log")
 let report = Report()
 print("ble-mcp hardware smoke test: \(options.binary)\nlogs and capture: \(workspace.path)\n")
 
-let server = try Server(
-    binary: options.binary,
-    environment: ["BLE_MCP_LOG_LEVEL": "info", "BLE_MCP_CAPTURE": workspace.path],
-    log: log)
+var environment = ["BLE_MCP_LOG_LEVEL": "info", "BLE_MCP_CAPTURE": workspace.path]
+if let exchange = options.transact {
+    // Writes stay off for everything but this one frame.
+    environment["BLE_MCP_ALLOW_WRITES"] = "1"
+    environment["BLE_MCP_WRITE_VALUE_ALLOWLIST"] = "\(exchange.characteristic):\(exchange.frame)"
+}
+let server = try Server(binary: options.binary, environment: environment, log: log)
 
 let initialized = server.request(
     "initialize",
@@ -211,6 +226,21 @@ for uuid in options.reads {
         readError ? describe(reading) : "hex \(value?["hex"] ?? "?")" + ((value?["utf8"] as? String).map { ", text \"\($0)\"" } ?? ""))
 }
 
+if let exchange = options.transact {
+    var arguments: [String: Any] = [
+        "peripheral_id": peripheral, "characteristic_uuid": exchange.characteristic, "value": exchange.frame,
+        "reply_uuid": exchange.reply, "timeout_ms": 3_000,
+    ]
+    arguments["reply_prefix"] = exchange.prefix
+    let (result, transactError) = server.call("ble_transact", arguments)
+    let reply = result["reply"] as? [String: Any]
+    let hex = (reply?["value"] as? [String: Any])?["hex"] as? String
+    report.check(
+        "transact \(exchange.frame) on \(exchange.characteristic) gets its reply on \(exchange.reply)",
+        !transactError && hex.map { $0.hasPrefix(exchange.prefix?.lowercased() ?? "") } == true,
+        hex.map { "reply \($0) after \(reply?["latency_ms"] ?? "?") ms" } ?? describe(result))
+}
+
 let (rssi, rssiError) = server.call("ble_rssi", ["peripheral_id": peripheral])
 report.check("RSSI", !rssiError && rssi["rssi"] is Int, describe(rssi))
 
@@ -246,6 +276,11 @@ report.check("capture starts with its info row", rows.first?["note"] as? String 
 report.check(
     "capture records the reads", rows.contains { $0["note"] as? String == "read" },
     "\(rows.count) rows")
+if let exchange = options.transact {
+    let request = rows.firstIndex { $0["dir"] as? String == "tx" && $0["hex"] as? String == exchange.frame.lowercased() }
+    let reply = request.flatMap { index in rows[index...].firstIndex { $0["dir"] as? String == "rx" } }
+    report.check("capture holds the request before its reply", request != nil && reply != nil)
+}
 report.check(
     "capture ends with the shutdown's disconnect",
     rows.last?["note"] as? String == "disconnected" && rows.last?["reason"] as? String == "server shutting down",

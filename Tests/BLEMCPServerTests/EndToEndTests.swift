@@ -44,9 +44,12 @@ struct EndToEndTests {
         #expect(readOnlyNames.count == 15)
         #expect(!readOnlyNames.contains("ble_write"))
 
+        #expect(!readOnlyNames.contains("ble_transact"))
+
         let (writable, _) = try await connectedClient(writes: WritePolicy(isEnabled: true))
         let tools = try await writable.listTools().tools
-        #expect(tools.count == 17)
+        #expect(tools.count == 18)
+        #expect(tools.contains { $0.name == "ble_transact" && $0.annotations.destructiveHint == true })
         let write = try #require(tools.first { $0.name == "ble_write" })
         #expect(write.annotations.destructiveHint == true)
         #expect(write.annotations.readOnlyHint == false)
@@ -201,6 +204,45 @@ struct EndToEndTests {
         #expect(!markError)
         #expect(marked["marked"] as? Bool == true)
         #expect(capture.kinds == [.marker(note: "select AC V", fields: ["select": .string("G"), "expect_mode": .integer(1)])])
+    }
+
+    @Test("a request and its reply in one call through MCP")
+    func transact() async throws {
+        let (client, central) = try await connectedClient(writes: WritePolicy(isEnabled: true))
+        let id = Value.string(meter.id.description)
+        _ = try await call(client, "ble_connect", ["peripheral_id": id])
+        let replyAddress = CharacteristicAddress(peripheral: meter.id, service: Fixtures.uartService, characteristic: Fixtures.uartTX)
+        await central.setResponder(delay: .milliseconds(20)) { _, frame in
+            frame == Data([0xAB, 0xCD, 0x03, 0xFD, 0x02, 0x78])
+                ? [(replyAddress, Data([0x01])), (replyAddress, Data([0xAB, 0xCD, 0x04, 0xFF, 0x00, 0x02, 0x7B]))] : []
+        }
+        let arguments: [String: Value] = [
+            "peripheral_id": id, "characteristic_uuid": "6E400002-B5A3-F393-E0A9-E50E24DCCA9E", "value": "ab cd 03 fd 02 78",
+            "reply_uuid": "6E400003-B5A3-F393-E0A9-E50E24DCCA9E", "reply_prefix": "abcd04",
+        ]
+        let (result, isError) = try await call(client, "ble_transact", arguments)
+        #expect(!isError)
+        #expect(result["bytes_written"] as? Int == 6)
+        #expect(result["subscription_id"] as? String == "sub-1")
+        #expect(result["unmatched"] as? Int == 1)
+        #expect(result["note"] as? String == "1 other notification arrived and stays readable with ble_notifications.")
+        let reply = try #require(result["reply"] as? [String: Any])
+        #expect((reply["value"] as? [String: Any])?["hex"] as? String == "abcd04ff00027b")
+        #expect(reply["latency_ms"] is Int)
+
+        var silent = arguments
+        silent["value"] = "00"
+        silent["timeout_ms"] = 50
+        let (unanswered, unansweredError) = try await call(client, "ble_transact", silent)
+        #expect(!unansweredError)
+        #expect(unanswered["reply"] == nil)
+        #expect(
+            (unanswered["note"] as? String)?.hasPrefix("The frame was written, but no reply on 6E400003-B5A3-F393-E0A9-E50E24DCCA9E starting with abcd04 arrived within 50 ms.") == true)
+
+        silent["reply_prefix"] = "xyz"
+        let (bad, badError) = try await call(client, "ble_transact", silent)
+        #expect(badError)
+        #expect((bad["error"] as? [String: Any])?["code"] as? String == "invalid_arguments")
     }
 
     @Test("writes, subscriptions and notifications through MCP")
