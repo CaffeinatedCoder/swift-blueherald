@@ -61,18 +61,10 @@ enum BLEMCPCommand {
 
         // On SIGINT/SIGTERM, release scans and links before exiting; the controller would
         // otherwise keep peripherals connected until it notices the process is gone.
-        let signalSources = [SIGINT, SIGTERM].map { signalNumber in
-            signal(signalNumber, SIG_IGN)
-            let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .global())
-            source.setEventHandler {
-                Task {
-                    await session.shutdown()
-                    capture?.flush()
-                    exit(EXIT_SUCCESS)
-                }
-            }
-            source.resume()
-            return source
+        let signalSources = onTermination {
+            await session.shutdown()
+            capture?.flush()
+            exit(EXIT_SUCCESS)
         }
 
         logger.notice(
@@ -96,6 +88,25 @@ enum BLEMCPCommand {
         #else
         fail("ble-mcp needs CoreBluetooth; no Bluetooth backend exists for this platform yet.", status: EXIT_FAILURE)
         #endif
+    }
+
+    /// Runs `shutdown` once SIGINT or SIGTERM arrives. Keep the returned sources alive.
+    ///
+    /// `nonisolated` on purpose: a handler written inside `main` inherits its main-actor
+    /// isolation, and the runtime then traps when the signal source runs it on its own queue,
+    /// so the shutdown never happened and every stop left a crash report.
+    nonisolated private static func onTermination(
+        _ shutdown: @escaping @Sendable () async -> Void
+    ) -> [any DispatchSourceSignal] {
+        [SIGINT, SIGTERM].map { signalNumber in
+            signal(signalNumber, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .global())
+            source.setEventHandler {
+                Task { await shutdown() }
+            }
+            source.resume()
+            return source
+        }
     }
 
     private static func fail(_ message: String, status: Int32) -> Never {

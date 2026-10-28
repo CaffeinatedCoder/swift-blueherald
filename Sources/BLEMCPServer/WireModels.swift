@@ -17,7 +17,9 @@ struct UUIDReference: Encodable {
 
 struct Bytes: Encodable {
     let hex: String
-    /// Present only when the bytes are printable UTF-8 text, ignoring trailing NULs.
+    /// Present only when the bytes read as printable UTF-8 text of at least two characters,
+    /// ignoring trailing NUL padding. Shorter values are nearly always numbers: a battery level
+    /// of 89 would read "Y", and a little-endian 36 padded with a NUL would read "$".
     let utf8: String?
     let length: Int
 
@@ -33,7 +35,8 @@ struct Bytes: Encodable {
         let isPrintable = text.unicodeScalars.allSatisfy { scalar in
             !scalar.properties.generalCategory.isControl || scalar == "\n" || scalar == "\r" || scalar == "\t"
         }
-        return isPrintable ? text : nil
+        let looksLikeText = text.count >= 2 && text.contains { !$0.isWhitespace }
+        return isPrintable && looksLikeText ? text : nil
     }
 }
 
@@ -213,6 +216,8 @@ struct ValueReport: Encodable {
     let serviceUuid: String
     let characteristicUuid: String
     let characteristicName: String?
+    /// The device's own 0x2901 name for the characteristic, as discovery reported it.
+    let characteristicDescription: String?
     let descriptorUuid: String?
     let descriptorName: String?
     let value: Bytes
@@ -223,6 +228,7 @@ struct ValueReport: Encodable {
         serviceUuid = reading.address.service.description
         characteristicUuid = reading.address.characteristic.description
         characteristicName = AssignedNumbers.name(for: reading.address.characteristic)
+        characteristicDescription = reading.userDescription
         descriptorUuid = nil
         descriptorName = nil
         value = Bytes(reading.value)
@@ -235,6 +241,7 @@ struct ValueReport: Encodable {
         serviceUuid = characteristic.service.description
         characteristicUuid = characteristic.characteristic.description
         characteristicName = AssignedNumbers.name(for: characteristic.characteristic)
+        characteristicDescription = nil
         descriptorUuid = reading.address.descriptor.description
         descriptorName = AssignedNumbers.name(for: reading.address.descriptor)
         value = Bytes(reading.value)
@@ -266,6 +273,7 @@ struct SubscriptionReport: Encodable {
     let serviceUuid: String
     let characteristicUuid: String
     let characteristicName: String?
+    let characteristicDescription: String?
     let mode: String
     let state: String
     let closedReason: String?
@@ -280,6 +288,7 @@ struct SubscriptionReport: Encodable {
         serviceUuid = snapshot.address.service.description
         characteristicUuid = snapshot.address.characteristic.description
         characteristicName = AssignedNumbers.name(for: snapshot.address.characteristic)
+        characteristicDescription = snapshot.userDescription
         mode = snapshot.mode.rawValue
         switch snapshot.state {
         case .pending:
@@ -326,9 +335,17 @@ struct NotificationsReport: Encodable {
         dropped = batch.dropped
         subscriptions = batch.subscriptions.map(SubscriptionReport.init)
         note =
-            batch.waitSkipped
-            ? "Returned without waiting: no open subscription can deliver notifications. Call ble_subscribe first."
-            : nil
+            switch batch.wait {
+            case .none:
+                nil
+            case .skipped:
+                "Returned without waiting: no open subscription can deliver notifications. Call ble_subscribe first."
+            case .nothingArrived(let waited)
+            where batch.subscriptions.allSatisfy({ if case .closed = $0.state { true } else { false } }):
+                "Waited \(Int((waited / .milliseconds(1)).rounded())) ms; the subscription closed meanwhile (see closed_reason)."
+            case .nothingArrived(let waited):
+                "Waited \(Int((waited / .milliseconds(1)).rounded())) ms and nothing arrived."
+            }
     }
 }
 

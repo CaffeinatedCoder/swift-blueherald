@@ -107,7 +107,10 @@ struct EndToEndTests {
             client, "ble_read", ["peripheral_id": .string(peripheralID), "characteristic_uuid": "2a19"])
         let value = try #require(battery["value"] as? [String: Any])
         #expect(value["hex"] as? String == "57")
+        // One byte is a number, not the text "W".
+        #expect(value["utf8"] == nil)
         #expect(battery["characteristic_name"] as? String == "Battery Level")
+        #expect(battery["characteristic_description"] as? String == "Battery")
 
         let (manufacturerName, _) = try await call(
             client, "ble_read", ["peripheral_id": .string(peripheralID), "characteristic_uuid": "0x2A29"])
@@ -182,6 +185,11 @@ struct EndToEndTests {
             client, "ble_subscribe", ["peripheral_id": id, "characteristic_uuid": "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"])
         let subscriptionID = try #require(subscription["subscription_id"] as? String)
         #expect(subscriptionID == "sub-1")
+        #expect(subscription["characteristic_description"] as? String == "Data Out")
+
+        let (empty, _) = try await call(client, "ble_notifications", ["wait_ms": 100])
+        #expect((empty["notifications"] as? [Any])?.isEmpty == true)
+        #expect((empty["note"] as? String)?.hasPrefix("Waited 1") == true)
 
         let address = CharacteristicAddress(peripheral: meter.id, service: Fixtures.uartService, characteristic: Fixtures.uartTX)
         let sender = Task {
@@ -195,5 +203,13 @@ struct EndToEndTests {
         let value = try #require(notifications.first?["value"] as? [String: Any])
         #expect(value["hex"] as? String == "6869")
         #expect(value["utf8"] as? String == "hi")
+        #expect(batch["note"] == nil)
+
+        // A little-endian 36 padded with a NUL is not the text "$".
+        await central.notify(Data([0x24, 0x00]), from: address)
+        let (padded, _) = try await call(client, "ble_notifications", ["wait_ms": 5_000])
+        let number = try #require((padded["notifications"] as? [[String: Any]])?.first?["value"] as? [String: Any])
+        #expect(number["hex"] as? String == "2400")
+        #expect(number["utf8"] == nil)
     }
 }

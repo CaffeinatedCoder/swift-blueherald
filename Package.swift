@@ -87,6 +87,11 @@ let package = Package(
             swiftSettings: strictSettings
         ),
         .testTarget(
+            // Runs the built ble-mcp executable as a child process; no Bluetooth is used.
+            name: "BLEMCPCommandTests",
+            swiftSettings: strictSettings
+        ),
+        .testTarget(
             name: "BLEMCPServerTests",
             dependencies: [
                 "BLEMCPCore",

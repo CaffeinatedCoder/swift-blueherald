@@ -420,7 +420,7 @@ public actor BLESession {
         }
         capture(.read(address, value))
         return CharacteristicValue(
-            address: address, properties: target.characteristic.properties, value: value, readAt: .now)
+            address: address, userDescription: target.characteristic.userDescription, properties: target.characteristic.properties, value: value, readAt: .now)
     }
 
     /// Writes `value`. Without an explicit mode, characteristics that acknowledge writes get an
@@ -549,7 +549,8 @@ public actor BLESession {
         lastSubscriptionID += 1
         let id = SubscriptionID(rawValue: lastSubscriptionID)
         subscriptions[id] = Subscription(
-            id: id, address: address, mode: mode, capacity: configuration.limits.notificationBufferCapacity)
+            id: id, address: address, userDescription: target.characteristic.userDescription, mode: mode,
+            capacity: configuration.limits.notificationBufferCapacity)
         subscriptionsByAddress[address] = id
 
         let central = central
@@ -607,13 +608,18 @@ public actor BLESession {
         let selected = { (subscription: Subscription) in id == nil || subscription.id == id }
         let buffered = subscriptions.values.filter(selected).reduce(0) { $0 + $1.buffer.count }
         let canReceive = subscriptions.values.contains { selected($0) && $0.isOpen }
-        if wait > .zero, buffered == 0, canReceive {
-            await waitForNotification(on: id, timeout: wait)
-        }
-        return drain(id, maxCount: maxCount, waitSkipped: wait > .zero && buffered == 0 && !canReceive)
+        guard wait > .zero, buffered == 0 else { return drain(id, maxCount: maxCount, waited: nil) }
+        guard canReceive else { return drain(id, maxCount: maxCount, waited: nil, skipped: true) }
+        let clock = ContinuousClock()
+        let start = clock.now
+        await waitForNotification(on: id, timeout: wait)
+        return drain(id, maxCount: maxCount, waited: clock.now - start)
     }
 
-    private func drain(_ id: SubscriptionID?, maxCount: Int, waitSkipped: Bool) -> NotificationBatch {
+    /// - Parameters:
+    ///   - waited: How long the call waited before draining, if it did.
+    ///   - skipped: A wait was asked for but nothing could arrive.
+    private func drain(_ id: SubscriptionID?, maxCount: Int, waited: Duration?, skipped: Bool = false) -> NotificationBatch {
         let ids = id.map { [$0] } ?? subscriptions.keys.sorted()
         var collected: [ValueNotification] = []
         collected.reserveCapacity(min(maxCount, 256))
@@ -646,9 +652,16 @@ public actor BLESession {
                 subscriptions[candidate] = nil
             }
         }
+        let wait: NotificationBatch.WaitOutcome =
+            if skipped {
+                .skipped
+            } else if let waited, collected.isEmpty {
+                .nothingArrived(after: waited)
+            } else {
+                .none
+            }
         return NotificationBatch(
-            notifications: collected, remaining: remaining, dropped: dropped, subscriptions: snapshots,
-            waitSkipped: waitSkipped)
+            notifications: collected, remaining: remaining, dropped: dropped, subscriptions: snapshots, wait: wait)
     }
 
     private func waitForNotification(on id: SubscriptionID?, timeout: Duration) async {
@@ -867,6 +880,7 @@ private struct Connection {
 private struct Subscription {
     let id: SubscriptionID
     let address: CharacteristicAddress
+    let userDescription: String?
     let mode: NotificationMode
     let createdAt = Date.now
     var state = SubscriptionState.pending
@@ -875,9 +889,10 @@ private struct Subscription {
     var droppedCount = 0
     var droppedSinceLastRead = 0
 
-    init(id: SubscriptionID, address: CharacteristicAddress, mode: NotificationMode, capacity: Int) {
+    init(id: SubscriptionID, address: CharacteristicAddress, userDescription: String?, mode: NotificationMode, capacity: Int) {
         self.id = id
         self.address = address
+        self.userDescription = userDescription
         self.mode = mode
         buffer = RingBuffer(capacity: capacity)
     }
@@ -898,6 +913,7 @@ private struct Subscription {
         SubscriptionSnapshot(
             id: id,
             address: address,
+            userDescription: userDescription,
             mode: mode,
             state: state,
             createdAt: createdAt,

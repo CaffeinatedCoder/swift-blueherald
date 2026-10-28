@@ -57,6 +57,8 @@ public enum SubscriptionState: Hashable, Sendable {
 public struct SubscriptionSnapshot: Hashable, Sendable {
     public let id: SubscriptionID
     public let address: CharacteristicAddress
+    /// The characteristic's 0x2901 name, when discovery read it.
+    public let userDescription: String?
     public let mode: NotificationMode
     public let state: SubscriptionState
     public let createdAt: Date
@@ -82,13 +84,25 @@ public struct NotificationBatch: Sendable {
     public let dropped: Int
     /// The state of each subscription read, after the read.
     public let subscriptions: [SubscriptionSnapshot]
-    /// A wait was requested and nothing was buffered, but no open subscription could deliver
-    /// anything, so the call returned straight away.
-    public let waitSkipped: Bool
+    /// Why a call that asked to wait came back empty, if it did.
+    public let wait: WaitOutcome
+
+    public enum WaitOutcome: Hashable, Sendable {
+        /// No wait was asked for, or there were notifications to return.
+        case none
+        /// Nothing was buffered and no open subscription could deliver anything, so the call
+        /// returned straight away.
+        case skipped
+        /// The call waited this long and nothing arrived: the wait ran out, or the
+        /// subscriptions closed meanwhile.
+        case nothingArrived(after: Duration)
+    }
 }
 
 public struct CharacteristicValue: Sendable {
     public let address: CharacteristicAddress
+    /// The characteristic's 0x2901 name, when discovery read it.
+    public let userDescription: String?
     public let properties: CharacteristicProperties
     public let value: Data
     public let readAt: Date

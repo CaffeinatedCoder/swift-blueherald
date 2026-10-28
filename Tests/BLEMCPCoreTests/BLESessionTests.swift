@@ -315,7 +315,11 @@ struct BLESessionTests {
         let subscription = try await session.subscribe(selector(Fixtures.uartTX))
         let batch = try await session.notifications(from: subscription.id, maxCount: 10, waitUpTo: .milliseconds(50))
         #expect(batch.notifications.isEmpty)
-        #expect(!batch.waitSkipped)
+        guard case .nothingArrived(let waited) = batch.wait else {
+            Issue.record("expected an expired wait, got \(batch.wait)")
+            return
+        }
+        #expect(waited >= .milliseconds(50))
     }
 
     @Test("a wait with no open subscription returns at once and says why")
@@ -325,9 +329,9 @@ struct BLESessionTests {
         let start = clock.now
         let batch = try await session.notifications(maxCount: 10, waitUpTo: .seconds(30))
         #expect(clock.now - start < .seconds(5))
-        #expect(batch.waitSkipped)
+        #expect(batch.wait == .skipped)
         // Without a requested wait there is nothing to explain.
-        #expect(try await session.notifications(maxCount: 10).waitSkipped == false)
+        #expect(try await session.notifications(maxCount: 10).wait == .none)
     }
 
     @Test("a lost link closes subscriptions but keeps their buffered values")
