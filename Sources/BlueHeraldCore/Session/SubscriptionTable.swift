@@ -267,3 +267,55 @@ struct WaiterQueue<Waker: Sendable>: Sendable {
         return ready
     }
 }
+
+/// Which transaction may wait on a reply subscription: one at a time, in arrival order. Two
+/// exchanges that wait on one characteristic would otherwise take each other's replies. Generic
+/// over what wakes a waiter, like `WaiterQueue`.
+struct TransactionQueue<Waker: Sendable>: Sendable {
+    private struct Waiter: Sendable {
+        let token: UInt64
+        let subscription: SubscriptionID
+        let waker: Waker
+    }
+
+    private var busy: Set<SubscriptionID> = []
+    private var waiting: [Waiter] = []
+    private var lastToken: UInt64 = 0
+
+    mutating func nextToken() -> UInt64 {
+        lastToken += 1
+        return lastToken
+    }
+
+    /// Takes `subscription` and returns `true` if it is free; otherwise queues `waker`, to be
+    /// woken once the subscription is handed to it.
+    mutating func enter(_ subscription: SubscriptionID, token: UInt64, waker: Waker) -> Bool {
+        guard busy.contains(subscription) else {
+            busy.insert(subscription)
+            return true
+        }
+        waiting.append(Waiter(token: token, subscription: subscription, waker: waker))
+        return false
+    }
+
+    /// Hands `subscription` straight to the next transaction waiting for it, so no later call can
+    /// overtake that one, and returns its waker; frees the subscription when nobody waits.
+    mutating func leave(_ subscription: SubscriptionID) -> Waker? {
+        guard let index = waiting.firstIndex(where: { $0.subscription == subscription }) else {
+            busy.remove(subscription)
+            return nil
+        }
+        return waiting.remove(at: index).waker
+    }
+
+    /// Takes back a waiter that gave up. `nil` if it was already handed the subscription.
+    mutating func withdraw(_ token: UInt64) -> Waker? {
+        guard let index = waiting.firstIndex(where: { $0.token == token }) else { return nil }
+        return waiting.remove(at: index).waker
+    }
+
+    mutating func takeAll() -> [Waker] {
+        defer { waiting.removeAll() }
+        return waiting.map(\.waker)
+    }
+}

@@ -27,6 +27,8 @@ public actor BLESession {
     private var connections = ConnectionTable()
     private var subscriptions = SubscriptionTable()
     private var waiters = WaiterQueue<CheckedContinuation<Void, Never>>()
+    /// Resumed with `true` once the reply subscription is theirs, `false` on shutdown.
+    private var transactions = TransactionQueue<CheckedContinuation<Bool, Never>>()
 
     /// - Parameter capture: Receives every write, notification, read and link change, in order.
     public init(
@@ -68,6 +70,7 @@ public actor BLESession {
         }
         connections.removeAll()
         waiters.takeAll().forEach { $0.resume() }
+        transactions.takeAll().forEach { $0.resume(returning: false) }
         eventPump?.cancel()
         eventPump = nil
         eventSink.finish()
@@ -450,7 +453,9 @@ public actor BLESession {
     /// The reply characteristic is subscribed to before the write, so even an immediate answer is
     /// caught, and the subscription stays open so the next exchange is just as safe. The reply is
     /// taken out of the buffer; anything else that arrived stays readable with `notifications`.
-    /// Not having an answer is not an error: the write happened, and the result says so.
+    /// Exchanges that wait on the same reply characteristic run one after the other, so neither
+    /// can take the other's answer. Not having an answer is not an error: the write happened,
+    /// and the result says so.
     public func transact(
         _ value: Data,
         to selector: CharacteristicSelector,
@@ -461,7 +466,8 @@ public actor BLESession {
     ) async throws(BLEError) -> Transaction {
         // Policy first, as in `write`: a refused frame must not even cause a subscription.
         try configuration.writePolicy.checkWrite(value, to: selector.characteristic)
-        let id = try await subscribe(replySelector).id
+        let id = try await claimReplies(on: replySelector)
+        defer { releaseReplies(on: id) }
         let write = try await prepareWrite(value, to: selector, mode: mode)
         // Opened only now, with nothing left to wait for before the write goes out: whatever
         // arrived while the write was being prepared is not its answer.
@@ -491,6 +497,47 @@ public actor BLESession {
             unmatched: subscriptions.unmatched(on: id, in: window, prefix: prefix),
             subscription: subscription.snapshot,
             timeout: timeout)
+    }
+
+    /// Subscribes to `selector` and waits until no other transaction waits on that subscription.
+    /// Returns it open and claimed; the caller releases it.
+    private func claimReplies(on selector: CharacteristicSelector) async throws(BLEError) -> SubscriptionID {
+        while true {
+            let id = try await subscribe(selector).id
+            let token = transactions.nextToken()
+            // Isolation passed explicitly, as in `waitForNotification`.
+            let claimed = await withTaskCancellationHandler(
+                operation: {
+                    await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                        guard !Task.isCancelled else {
+                            continuation.resume(returning: false)
+                            return
+                        }
+                        if transactions.enter(id, token: token, waker: continuation) {
+                            continuation.resume(returning: true)
+                        }
+                    }
+                },
+                onCancel: { Task { await self.withdrawClaim(token) } },
+                isolation: self)
+            guard claimed else { throw .cancelled }
+            // Cancelled just as it was handed over: pass it on.
+            guard !Task.isCancelled else {
+                releaseReplies(on: id)
+                throw .cancelled
+            }
+            // Waiting for the turn can take a whole exchange; the subscription may be gone by now.
+            if subscriptions[id]?.isOpen == true { return id }
+            releaseReplies(on: id)
+        }
+    }
+
+    private func releaseReplies(on id: SubscriptionID) {
+        transactions.leave(id)?.resume(returning: true)
+    }
+
+    private func withdrawClaim(_ token: UInt64) {
+        transactions.withdraw(token)?.resume(returning: false)
     }
 
     // MARK: - Subscriptions

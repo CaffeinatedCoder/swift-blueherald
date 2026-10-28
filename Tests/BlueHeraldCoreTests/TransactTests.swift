@@ -132,6 +132,63 @@ struct TransactTests {
         #expect(try await session.notifications(maxCount: 10).notifications.map(\.value) == [early])
     }
 
+    @Test("two exchanges on one reply characteristic run one after the other and keep their own replies")
+    func concurrentExchanges() async throws {
+        let session = try await makeSession()
+        let (central, tx) = (central, tx)
+        let (ignored, answered, answer) = (Data([0x01]), Data([0x02]), Data([0xAB, 0xCD, 0x04, 0x02]))
+        await central.setResponder(delay: .milliseconds(20)) { _, value in value == answered ? [(tx, answer)] : [] }
+        let (request, reply) = (selector(Fixtures.uartRX), selector(Fixtures.uartTX))
+        let first = Task { try await session.transact(ignored, to: request, replyOn: reply, timeout: .milliseconds(300)) }
+        try await waitUntil { await central.writes.count == 1 }
+
+        let second = try await session.transact(answered, to: request, replyOn: reply, timeout: .seconds(2))
+        let unanswered = try await first.value
+        #expect(unanswered.reply == nil)
+        #expect(second.reply?.value == answer)
+        #expect(await central.writes.map(\.value) == [ignored, answered])
+    }
+
+    @Test("an exchange waiting for its turn can be cancelled, and then never writes")
+    func cancelledWhileWaitingForItsTurn() async throws {
+        let session = try await makeSession()
+        let central = central
+        let (request, reply) = (selector(Fixtures.uartRX), selector(Fixtures.uartTX))
+        let first = Task { try await session.transact(Data([0x01]), to: request, replyOn: reply, timeout: .seconds(2)) }
+        try await waitUntil { await central.writes.count == 1 }
+
+        let clock = ContinuousClock()
+        let start = clock.now
+        let second = Task { try await session.transact(Data([0x02]), to: request, replyOn: reply, timeout: .seconds(2)) }
+        try await Task.sleep(for: .milliseconds(50))
+        second.cancel()
+        await #expect(throws: BLEError.cancelled) { try await second.value }
+        #expect(clock.now - start < .seconds(1), "the cancelled exchange waited for the first one")
+        first.cancel()
+        _ = await first.result
+        #expect(await central.writes.map(\.value) == [Data([0x01])])
+    }
+
+    @Test("an exchange whose reply subscription closed while it waited for its turn subscribes again")
+    func subscriptionClosedWhileWaitingForItsTurn() async throws {
+        let session = try await makeSession()
+        let (central, tx) = (central, tx)
+        let (answered, answer) = (Data([0x02]), Data([0xAB, 0xCD, 0x04, 0x02]))
+        await central.setResponder(delay: .milliseconds(20)) { _, value in value == answered ? [(tx, answer)] : [] }
+        let (request, reply) = (selector(Fixtures.uartRX), selector(Fixtures.uartTX))
+        let first = Task { try await session.transact(Data([0x01]), to: request, replyOn: reply, timeout: .seconds(2)) }
+        try await waitUntil { await central.writes.count == 1 }
+        let second = Task { try await session.transact(answered, to: request, replyOn: reply, timeout: .seconds(2)) }
+        try await Task.sleep(for: .milliseconds(50))
+
+        let closed = try #require(await session.status().subscriptions.first)
+        try await session.unsubscribe(closed.id)
+        _ = await first.result
+        let result = try await second.value
+        #expect(result.reply?.value == answer)
+        #expect(result.subscription.id != closed.id)
+    }
+
     @Test("no answer is not an error: the write happened and the reply is missing")
     func noReply() async throws {
         let session = try await makeSession()

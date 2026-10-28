@@ -319,3 +319,43 @@ struct WaiterQueueTests {
         #expect(second == nil)
     }
 }
+
+@Suite("TransactionQueue")
+struct TransactionQueueTests {
+    let a = SubscriptionID(rawValue: 1)
+    let b = SubscriptionID(rawValue: 2)
+
+    @Test("a free subscription is taken at once; a busy one is handed on in arrival order")
+    func handOver() {
+        var queue = TransactionQueue<String>()
+        let first = queue.enter(a, token: queue.nextToken(), waker: "first")
+        let onB = queue.enter(b, token: queue.nextToken(), waker: "on b")
+        let second = queue.enter(a, token: queue.nextToken(), waker: "second")
+        let third = queue.enter(a, token: queue.nextToken(), waker: "third")
+        #expect(first && onB && !second && !third)
+        #expect(queue.leave(a) == "second")
+        // Still busy: handed over, not freed, so a newcomer queues behind the third.
+        let newcomer = queue.enter(a, token: queue.nextToken(), waker: "newcomer")
+        #expect(!newcomer)
+        #expect(queue.leave(a) == "third")
+        #expect(queue.leave(a) == "newcomer")
+        #expect(queue.leave(a) == nil)
+        let again = queue.enter(a, token: queue.nextToken(), waker: "again")
+        #expect(again)
+    }
+
+    @Test("a waiter that gives up is withdrawn once, and not if it was already handed the subscription")
+    func withdraw() {
+        var queue = TransactionQueue<String>()
+        _ = queue.enter(a, token: queue.nextToken(), waker: "holder")
+        let waiting = queue.nextToken()
+        _ = queue.enter(a, token: waiting, waker: "waiting")
+        let handed = queue.nextToken()
+        _ = queue.enter(a, token: handed, waker: "handed")
+        #expect(queue.withdraw(waiting) == "waiting")
+        #expect(queue.withdraw(waiting) == nil)
+        #expect(queue.leave(a) == "handed")
+        #expect(queue.withdraw(handed) == nil)
+        #expect(queue.takeAll().isEmpty)
+    }
+}

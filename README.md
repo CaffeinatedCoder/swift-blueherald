@@ -42,7 +42,7 @@ Development builds are ad-hoc signed, so each rebuild is a new identity to macOS
 | `ble_discover` | Services, characteristics (with properties) and descriptors, with names for well-known UUIDs and each characteristic's own 0x2901 user description |
 | `ble_read` / `ble_read_descriptor` | Values as hex, plus UTF-8 text when printable |
 | `ble_write` / `ble_write_descriptor` | Only listed when writes are enabled; `value` in hex, base64 or utf8 |
-| `ble_transact` | Only listed when writes are enabled. Writes a frame and returns the device's reply, the first notification on `reply_uuid` after the write (optionally starting with `reply_prefix`), with its latency, in one call. The reply characteristic is subscribed to before the write, so a fast answer is never missed |
+| `ble_transact` | Only listed when writes are enabled. Writes a frame and returns the device's reply, the first notification on `reply_uuid` after the write (optionally starting with `reply_prefix`), with its latency, in one call. The reply characteristic is subscribed to before the write, so a fast answer is never missed, and only a notification received after the write counts. Exchanges that wait on the same reply characteristic run one after the other, so neither takes the other's answer |
 | `ble_subscribe` / `ble_unsubscribe` | Notifications and indications into a bounded per-subscription buffer |
 | `ble_notifications` | Drains buffered values in arrival order across subscriptions; `wait_ms` blocks until data arrives instead of polling, and `note` says when there was no open subscription to wait on |
 | `ble_rssi` | Signal strength of a connected peripheral |
