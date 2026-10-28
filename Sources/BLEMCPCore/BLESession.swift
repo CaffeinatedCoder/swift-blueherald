@@ -27,6 +27,7 @@ public actor BLESession {
     private var subscriptionsByAddress: [CharacteristicAddress: SubscriptionID] = [:]
     private var waiters: [NotificationWaiter] = []
     private var knownNames: [PeripheralID: String] = [:]
+    private var linkLosses: [PeripheralID: LinkLoss] = [:]
 
     private var lastScanID = 0
     private var lastSubscriptionID = 0
@@ -34,9 +35,7 @@ public actor BLESession {
     private var lastWaiterToken: UInt64 = 0
 
     private static let knownNameCapacity = 4096
-    /// How long `status()` gives a backend that has only just started to report the adapter state.
-    /// CoreBluetooth reports it shortly after its manager is created, which happens on first use.
-    private static let stateSettleTime = Duration.seconds(2)
+    private static let linkLossCapacity = 64
     private static let finishedScanCapacity = 8
 
     /// - Parameter capture: Receives every write, notification, read and link change, in order.
@@ -100,9 +99,14 @@ public actor BLESession {
 
     public func status() async -> SessionStatus {
         var state = await central.state()
-        if state == .unknown {
+        if state.isSettling || state == .awaitingPermission {
+            // CoreBluetooth reports the adapter state a moment after its manager is created, on
+            // first use. The first start of a new build can take seconds while macOS checks the
+            // binary (2 s was measured to be too short), so wait as long as any operation would.
+            // A permission prompt needs a person, so that wait is short.
+            let timeouts = configuration.timeouts
+            let limit = state == .awaitingPermission ? min(timeouts.permissionPrompt, timeouts.poweredOn) : timeouts.poweredOn
             let central = central
-            let limit = min(configuration.timeouts.poweredOn, Self.stateSettleTime)
             _ = try? await withDeadline(limit, operation: "Waiting for the adapter state") {
                 try await central.waitUntilPoweredOn()
             }
@@ -115,7 +119,8 @@ public actor BLESession {
             configuration: configuration,
             activeScans: scans.values.filter(\.isActive).map(\.id).sorted(),
             connections: await connectionSnapshots(),
-            subscriptions: subscriptions.values.map(\.snapshot).sorted { $0.id < $1.id })
+            subscriptions: subscriptions.values.map(\.snapshot).sorted { $0.id < $1.id },
+            linkLosses: linkLosses.values.sorted { $0.at > $1.at })
     }
 
     // MARK: - Scanning
@@ -266,6 +271,7 @@ public actor BLESession {
             throw .disconnected(id, reason: "the connection was closed while it was being established")
         }
         connections[id]?.markConnected(name: peripheral.name ?? knownNames[id])
+        linkLosses[id] = nil
         capture(.connected(id, name: connections[id]?.name))
         if discover {
             _ = try? await discoverServices(of: id, userDescriptions: userDescriptions)
@@ -323,7 +329,13 @@ public actor BLESession {
     }
 
     private func requireConnected(_ id: PeripheralID) throws(BLEError) -> Connection {
-        guard let connection = connections[id], connection.state == .connected else { throw .notConnected(id) }
+        guard let connection = connections[id], connection.state == .connected else {
+            // Saying why beats a bare "not connected": the agent may never have seen the drop.
+            if connections[id] == nil, let loss = linkLosses[id] {
+                throw .linkLost(id, reason: loss.reason, at: loss.at)
+            }
+            throw .notConnected(id)
+        }
         return connection
     }
 
@@ -405,9 +417,7 @@ public actor BLESession {
 
     /// 0x2901 holds UTF-8 text; devices often pad it with NULs or spaces.
     private static func userDescriptionText(_ value: Data) -> String? {
-        let trimmed = value.reversed().drop { $0 == 0 }.reversed()
-        let text = String(validating: trimmed, as: UTF8.self)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return text?.isEmpty == false ? text : nil
+        DeviceText.clean(String(validating: value.reversed().drop { $0 == 0 }.reversed(), as: UTF8.self))
     }
 
     public func read(_ selector: CharacteristicSelector) async throws(BLEError) -> CharacteristicValue {
@@ -769,8 +779,16 @@ public actor BLESession {
         guard let connection = connections.removeValue(forKey: id) else { return }
         closeSubscriptions(of: id, reason: "peripheral disconnected" + (reason.map { ": \($0)" } ?? ""))
         if connection.state == .connected {
+            recordLinkLoss(LinkLoss(peripheral: id, name: connection.name, reason: reason, at: .now))
             capture(.disconnected(id, reason: reason))
             eventSink.yield(.peripheralDisconnected(id, name: connection.name, reason: reason))
+        }
+    }
+
+    private func recordLinkLoss(_ loss: LinkLoss) {
+        linkLosses[loss.peripheral] = loss
+        if linkLosses.count > Self.linkLossCapacity, let oldest = linkLosses.values.min(by: { $0.at < $1.at }) {
+            linkLosses[oldest.peripheral] = nil
         }
     }
 

@@ -57,10 +57,13 @@ public actor CoreBluetoothCentral: BLECentral {
     // MARK: - BLECentral
 
     public func state() -> CentralState {
-        if CBManager.authorization == .denied || CBManager.authorization == .restricted {
+        // Read before `manager` may exist: creating it is what shows the prompt.
+        let authorization = CBManager.authorization
+        if authorization == .denied || authorization == .restricted {
             return .unauthorized
         }
-        return CentralState(manager.state)
+        let state = CentralState(manager.state)
+        return state == .unknown && authorization == .notDetermined ? .awaitingPermission : state
     }
 
     public func waitUntilPoweredOn() async throws(BLEError) {
@@ -346,7 +349,8 @@ public actor CoreBluetoothCentral: BLECentral {
     func handleFailedConnect(_ peripheral: CBPeripheral, error: (any Error)?) {
         let id = PeripheralID(peripheral.identifier)
         let reason = error?.localizedDescription ?? "the peripheral did not accept the connection"
-        pending.resumeAll(.connect(id), with: .failure(.connectionFailed(id, reason: reason)))
+        let failure = BLEError(pairingFailure: error) ?? .connectionFailed(id, reason: reason)
+        pending.resumeAll(.connect(id), with: .failure(failure))
     }
 
     func handleDisconnect(_ peripheral: CBPeripheral, error: (any Error)?) {

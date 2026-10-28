@@ -12,6 +12,8 @@ public enum BLEError: Error, Hashable, Sendable {
     case connectionLimitReached(limit: Int)
     case connectionFailed(PeripheralID, reason: String)
     case disconnected(PeripheralID, reason: String?)
+    /// An established link that the peripheral or the adapter dropped between calls.
+    case linkLost(PeripheralID, reason: String?, at: Date)
     case serviceNotFound(BLEUUID, available: [BLEUUID])
     case characteristicNotFound(BLEUUID, service: BLEUUID?, available: [BLEUUID])
     case ambiguousCharacteristic(BLEUUID, services: [BLEUUID])
@@ -28,6 +30,10 @@ public enum BLEError: Error, Hashable, Sendable {
     case scanNotFound(ScanID)
     case scanLimitReached(limit: Int)
     case attributeError(operation: String, code: Int, message: String)
+    /// The attribute needs an encrypted, paired link; the access starts pairing.
+    case pairingRequired(operation: String, reason: String)
+    /// Pairing was refused, timed out, or the peripheral no longer has this Mac's keys.
+    case pairingFailed(reason: String)
     case backendFailure(String)
 }
 
@@ -42,7 +48,7 @@ extension BLEError {
         case .alreadyConnecting: "already_connecting"
         case .connectionLimitReached: "connection_limit_reached"
         case .connectionFailed: "connection_failed"
-        case .disconnected: "disconnected"
+        case .disconnected, .linkLost: "disconnected"
         case .serviceNotFound: "service_not_found"
         case .characteristicNotFound: "characteristic_not_found"
         case .ambiguousCharacteristic: "ambiguous_characteristic"
@@ -59,6 +65,8 @@ extension BLEError {
         case .scanNotFound: "scan_not_found"
         case .scanLimitReached: "scan_limit_reached"
         case .attributeError: "attribute_error"
+        case .pairingRequired: "pairing_required"
+        case .pairingFailed: "pairing_failed"
         case .backendFailure: "backend_failure"
         }
     }
@@ -83,6 +91,8 @@ extension BLEError {
             "Connecting to \(id) failed: \(reason)"
         case .disconnected(let id, let reason):
             "Peripheral \(id) disconnected\(reason.map { ": \($0)" } ?? ".")"
+        case .linkLost(let id, let reason, let at):
+            "Peripheral \(id) lost its link at \(at.formatted(Date.ISO8601FormatStyle(includingFractionalSeconds: true)))\(reason.map { ": \($0)" } ?? ".")"
         case .serviceNotFound(let uuid, let available):
             "Service \(uuid) not found. Available services: \(list(available))."
         case .characteristicNotFound(let uuid, let service, let available):
@@ -115,6 +125,10 @@ extension BLEError {
             "The maximum of \(limit) concurrent scans is reached."
         case .attributeError(let operation, let code, let message):
             "\(operation) failed with ATT/stack error \(code): \(message)"
+        case .pairingRequired(let operation, let reason):
+            "\(operation) needs a paired, encrypted link: \(reason)"
+        case .pairingFailed(let reason):
+            "Pairing failed: \(reason)"
         case .backendFailure(let message):
             "Bluetooth backend failure: \(message)"
         }
@@ -126,15 +140,17 @@ extension BLEError {
             "Grant Bluetooth access to the app that launched this server in System Settings > Privacy & Security > Bluetooth, then restart it."
         case .bluetoothUnavailable(.poweredOff):
             "Turn Bluetooth on."
+        case .bluetoothUnavailable(.awaitingPermission):
+            "macOS is asking whether ble-mcp may use Bluetooth. Someone at this Mac has to accept the prompt; then retry."
         case .bluetoothUnavailable(.unknown), .bluetoothUnavailable(.resetting):
-            "The adapter has not reported ready yet. On first launch macOS may be showing a Bluetooth permission prompt; accept it and retry."
+            "The adapter has not reported its state yet. The first Bluetooth use after ble-mcp was rebuilt or updated can take several seconds while macOS checks the new binary; retry shortly."
         case .bluetoothUnavailable(.unsupported):
             "This Mac has no Bluetooth LE controller."
         case .unknownPeripheral:
             "Run ble_scan first; peripheral ids are only resolvable after the host has seen the device."
         case .notConnected:
             "Call ble_connect first. Connections do not survive a server restart; ble_status shows when this server started."
-        case .disconnected:
+        case .disconnected, .linkLost:
             "Call ble_connect again."
         case .connectionLimitReached:
             "Disconnect an idle peripheral with ble_disconnect, or raise BLE_MCP_MAX_CONNECTIONS."
@@ -158,6 +174,10 @@ extension BLEError {
             "Stop a running scan with ble_scan_stop."
         case .timedOut:
             "The peripheral may be out of range or busy; check it is advertising and retry."
+        case .pairingRequired:
+            "This access starts pairing. macOS shows a pairing dialog that a person has to confirm (some devices also need a PIN); retry once it is confirmed. If no dialog appears, pair the device in System Settings > Bluetooth."
+        case .pairingFailed:
+            "If the device was reset or paired with another host, remove it in System Settings > Bluetooth, then connect and retry so the Mac pairs again. A pairing dialog nobody confirmed also ends here."
         default:
             nil
         }

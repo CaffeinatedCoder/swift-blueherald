@@ -155,7 +155,7 @@ public actor FakeCentral: BLECentral {
 
     public func waitUntilPoweredOn() async throws(BLEError) {
         // Polls, so that `changeState(to:)` releases waiters the way CoreBluetooth's state callback does.
-        while adapterState == .unknown || adapterState == .resetting {
+        while adapterState.isSettling || adapterState == .awaitingPermission {
             do {
                 try await Task.sleep(for: .milliseconds(5))
             } catch {

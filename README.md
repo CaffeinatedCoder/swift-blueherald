@@ -25,7 +25,7 @@ For other clients, launch `ble-mcp` as a stdio server and pass the variables bel
 
 ### Bluetooth permission
 
-The first BLE operation triggers the macOS prompt *"ble-mcp would like to use Bluetooth"*. Accept it. Until you do, tools fail with `bluetooth_unavailable` and a hint.
+The first BLE operation triggers the macOS prompt *"ble-mcp would like to use Bluetooth"*. Accept it. Until you do, `ble_status` reports `adapter_state: awaiting_permission` and other tools fail with `bluetooth_unavailable` and a hint. The first start after ble-mcp is rebuilt or updated can also take several seconds while macOS checks the new binary; `ble_status` waits for that rather than reporting `unknown`.
 
 macOS normally attributes a command-line tool's privacy permissions to the app that launched it. If that app (Claude, an IDE) has no Bluetooth usage description, macOS kills the tool outright. `ble-mcp` therefore relaunches itself once at startup as its own "responsible process", so the permission belongs to `ble-mcp` regardless of the launcher. Set `BLE_MCP_OWN_PERMISSION=0` to turn this off.
 
@@ -35,7 +35,7 @@ Development builds are ad-hoc signed, so each rebuild is a new identity to macOS
 
 | Tool | Does |
 |---|---|
-| `ble_status` | Adapter state, when the server started, write policy, limits, capture file, every open scan, connection and subscription |
+| `ble_status` | Adapter state, when the server started, write policy, limits, capture file, every open scan, connection and subscription, and links that dropped since |
 | `ble_scan` | Blocking scan with filters (`name`, `service_uuids`, `min_rssi`, `manufacturer_id`, `connectable_only`); `stop_after` returns as soon as enough matches are found |
 | `ble_scan_start` / `ble_scan_results` / `ble_scan_stop` | Background scans that run while the agent does other work |
 | `ble_connect` / `ble_disconnect` / `ble_connections` | Connections; connecting discovers the full attribute table by default. Disconnecting a peripheral that is not connected succeeds with `was_connected: false` |
@@ -55,7 +55,13 @@ Failures come back as tool results with `isError: true` and a body like:
 {"error":{"code":"ambiguous_characteristic","message":"Characteristic FFE1 exists in several services: FFE0, FFF0.","hint":"Pass service_uuid to choose one."}}
 ```
 
-Disconnects and adapter changes are also pushed as MCP log notifications, for clients that show them.
+A link the peripheral or the adapter drops is remembered until the peripheral reconnects: the next call for it fails with `disconnected`, the reason and the time, and `ble_status` lists it. Disconnects and adapter changes are also pushed as MCP log notifications, but many clients do not show those to the agent.
+
+CoreBluetooth has no pairing API; pairing starts when the agent touches an attribute that needs encryption. Those failures come back as `pairing_required` (macOS is showing a pairing dialog a person has to confirm) or `pairing_failed` (the device lost this Mac's keys, or nobody confirmed), each with a hint.
+
+### Device data is untrusted
+
+Device names, 0x2901 descriptions and the text of values come from the devices themselves and end up in the agent's context, so a device can try to steer the agent. Names and descriptions are cleaned where they enter the server (control and invisible formatting characters removed, whitespace collapsed, at most 64 characters), value text is cut at 128 characters (`hex` always has the whole value), and the server instructions tell the agent to treat all of it as data, never as instructions. Keep writes off, or narrowed to exact frames, when working with devices you do not control.
 
 ## Capturing a session
 
@@ -118,13 +124,20 @@ Swift features in use: Swift 6 language mode with complete concurrency checking,
 
 ```bash
 swift build
-swift test                       # 93 tests, no Bluetooth hardware needed
+swift test                       # no Bluetooth hardware needed
 swift test -c release            # the same, optimised
 swift test --sanitize=thread
 npx @modelcontextprotocol/inspector .build/debug/ble-mcp
 ```
 
-The tests run against `FakeCentral`, so they cannot cover `CoreBluetoothCentral`. Check changes there with a **release** build against a real device: the optimiser has changed how its actor hops behave before.
+The tests run against `FakeCentral`, so they cannot cover `CoreBluetoothCentral`. Check changes there with a **release** build against a real device: the optimiser has changed how its actor hops behave before. `Scripts/hardware-smoke.swift` does that in about ten seconds, read-only, and exits non-zero on any failure:
+
+```bash
+swift build -c release
+swift Scripts/hardware-smoke.swift --name iPhone --read 2A29,2A19 --subscribe 2A2B
+```
+
+It scans, connects, reads, subscribes, disconnects, stops the server with SIGTERM while connected and checks the capture it wrote.
 
 Requires macOS 26 and Swift 6.2 or later.
 

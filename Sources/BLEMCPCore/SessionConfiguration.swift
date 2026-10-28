@@ -93,17 +93,22 @@ public struct SessionTimeouts: Hashable, Sendable {
     public let discovery: Duration
     /// A single read, write, subscription change or RSSI read.
     public let operation: Duration
+    /// How long a status request waits for someone to answer a Bluetooth permission prompt
+    /// before reporting it. Short, because a person has to act.
+    public let permissionPrompt: Duration
 
     public init(
         poweredOn: Duration = .seconds(10),
         connect: Duration = .seconds(15),
         discovery: Duration = .seconds(30),
-        operation: Duration = .seconds(10)
+        operation: Duration = .seconds(10),
+        permissionPrompt: Duration = .seconds(2)
     ) {
         self.poweredOn = poweredOn
         self.connect = connect
         self.discovery = discovery
         self.operation = operation
+        self.permissionPrompt = permissionPrompt
     }
 }
 

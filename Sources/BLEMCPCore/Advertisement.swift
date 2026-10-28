@@ -4,6 +4,7 @@ public import Foundation
 public struct Advertisement: Hashable, Sendable {
     public let peripheral: PeripheralID
     /// The advertised local name, falling back to the GAP name the platform has cached.
+    /// Cleaned with `DeviceText`.
     public let name: String?
     /// `nil` when the controller reported no usable RSSI (CoreBluetooth's 127).
     public let rssi: Int?
@@ -26,7 +27,7 @@ public struct Advertisement: Hashable, Sendable {
         receivedAt: Date = Date()
     ) {
         self.peripheral = peripheral
-        self.name = name
+        self.name = DeviceText.clean(name)
         self.rssi = rssi
         self.isConnectable = isConnectable
         self.serviceUUIDs = serviceUUIDs

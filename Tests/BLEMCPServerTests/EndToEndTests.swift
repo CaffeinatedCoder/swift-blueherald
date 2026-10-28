@@ -131,6 +131,40 @@ struct EndToEndTests {
         #expect(error["hint"] as? String == "Call ble_discover to list the attribute table.")
     }
 
+    @Test("pairing problems and dropped links come back with their own codes and hints")
+    func pairingAndLinkLoss() async throws {
+        let (client, central) = try await connectedClient()
+        let id = Value.string(meter.id.description)
+        _ = try await call(client, "ble_connect", ["peripheral_id": id])
+
+        await central.setReadBehavior(.fail(.pairingRequired(operation: "Read", reason: "Encryption is insufficient.")))
+        let (pairing, pairingError) = try await call(client, "ble_read", ["peripheral_id": id, "characteristic_uuid": "2a19"])
+        #expect(pairingError)
+        let pairingDetail = try #require(pairing["error"] as? [String: Any])
+        #expect(pairingDetail["code"] as? String == "pairing_required")
+        #expect((pairingDetail["hint"] as? String)?.contains("pairing dialog") == true)
+
+        await central.setReadBehavior(.succeed)
+        await central.dropLink(to: meter.id, reason: "connection timeout")
+        // The drop reaches the session through its event stream; wait until it has landed.
+        for _ in 0..<1_000 {
+            let (connections, _) = try await call(client, "ble_connections")
+            if (connections["connections"] as? [Any])?.isEmpty == true { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let (lost, lostError) = try await call(client, "ble_read", ["peripheral_id": id, "characteristic_uuid": "2a19"])
+        #expect(lostError)
+        let lostDetail = try #require(lost["error"] as? [String: Any])
+        #expect(lostDetail["code"] as? String == "disconnected")
+        #expect((lostDetail["message"] as? String)?.contains("connection timeout") == true)
+        #expect(lostDetail["hint"] as? String == "Call ble_connect again.")
+
+        let (status, _) = try await call(client, "ble_status")
+        let losses = try #require(status["link_losses"] as? [[String: Any]])
+        #expect(losses.first?["reason"] as? String == "connection timeout")
+        #expect(losses.first?["at"] is String)
+    }
+
     @Test("bad arguments come back as tool errors, unknown tools as protocol errors")
     func argumentErrors() async throws {
         let (client, _) = try await connectedClient()
@@ -211,5 +245,13 @@ struct EndToEndTests {
         let number = try #require((padded["notifications"] as? [[String: Any]])?.first?["value"] as? [String: Any])
         #expect(number["hex"] as? String == "2400")
         #expect(number["utf8"] == nil)
+
+        // Long text is cut for reading; hex keeps the whole value.
+        await central.notify(Data(repeating: UInt8(ascii: "A"), count: 200), from: address)
+        let (long, _) = try await call(client, "ble_notifications", ["wait_ms": 5_000])
+        let text = try #require((long["notifications"] as? [[String: Any]])?.first?["value"] as? [String: Any])
+        #expect((text["utf8"] as? String)?.count == 128)
+        #expect(text["utf8_truncated"] as? Bool == true)
+        #expect((text["hex"] as? String)?.count == 400)
     }
 }

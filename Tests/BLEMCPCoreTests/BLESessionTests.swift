@@ -400,6 +400,34 @@ struct BLESessionTests {
         _ = await report.result
     }
 
+    @Test("status keeps waiting for a slow adapter past the permission-prompt wait")
+    func statusWaitsForSlowAdapter() async {
+        // Measured on a relaunch after an update: the adapter needed more than 2 s to report.
+        let central = FakeCentral(state: .unknown)
+        let timeouts = SessionTimeouts(poweredOn: .seconds(5), permissionPrompt: .milliseconds(20))
+        let session = BLESession(central: central, configuration: SessionConfiguration(timeouts: timeouts))
+        let report = Task {
+            try await Task.sleep(for: .milliseconds(300))
+            await central.changeState(to: .poweredOn)
+        }
+        #expect(await session.status().adapterState == .poweredOn)
+        _ = await report.result
+    }
+
+    @Test("a pending permission prompt is reported as such, after a short wait")
+    func statusAwaitingPermission() async {
+        let central = FakeCentral(state: .awaitingPermission)
+        let timeouts = SessionTimeouts(poweredOn: .seconds(30), permissionPrompt: .milliseconds(50))
+        let session = BLESession(central: central, configuration: SessionConfiguration(timeouts: timeouts))
+        let clock = ContinuousClock()
+        let start = clock.now
+        let status = await session.status()
+        #expect(status.adapterState == .awaitingPermission)
+        #expect(clock.now - start < .seconds(5))
+        #expect(BLEError.bluetoothUnavailable(.awaitingPermission).hint?.contains("accept the prompt") == true)
+        #expect(BLEError.bluetoothUnavailable(.unknown).hint?.contains("permission") == false)
+    }
+
     @Test("status gives up on an adapter that stays silent")
     func statusStaysUnknown() async {
         let central = FakeCentral(state: .unknown)
@@ -414,6 +442,48 @@ struct BLESessionTests {
         _ = try await session.connect(meter.id)
         await central.changeState(to: .poweredOff)
         try await waitUntil { await session.connectionSnapshots().isEmpty }
+        #expect(await session.status().linkLosses.map(\.reason) == ["Bluetooth became powered_off"])
+    }
+
+    @Test("a dropped link is reported with its reason and time until the peripheral reconnects")
+    func linkLoss() async throws {
+        let session = await makeSession()
+        _ = try await session.connect(meter.id)
+        let dropped = Date.now
+        await central.dropLink(to: meter.id, reason: "connection timeout")
+        try await waitUntil { await session.connectionSnapshots().isEmpty }
+
+        do {
+            _ = try await session.read(selector(Fixtures.batteryLevel))
+            Issue.record("the read should fail")
+        } catch {
+            guard case .linkLost(let id, let reason, let at) = error else {
+                Issue.record("expected linkLost, got \(error)")
+                return
+            }
+            #expect(id == meter.id)
+            #expect(reason == "connection timeout")
+            #expect(at >= dropped)
+            #expect(error.code == "disconnected")
+            #expect(error.message.contains("connection timeout"))
+        }
+        let loss = try #require(await session.status().linkLosses.first)
+        #expect(loss.name == "BB-500 Meter")
+
+        _ = try await session.connect(meter.id)
+        _ = try await session.read(selector(Fixtures.batteryLevel))
+        #expect(await session.status().linkLosses.isEmpty)
+    }
+
+    @Test("a disconnect the agent asked for is not a link loss")
+    func requestedDisconnect() async throws {
+        let session = await makeSession()
+        _ = try await session.connect(meter.id)
+        await session.disconnect(meter.id)
+        await #expect(throws: BLEError.notConnected(meter.id)) {
+            try await session.read(self.selector(Fixtures.batteryLevel))
+        }
+        #expect(await session.status().linkLosses.isEmpty)
     }
 
     @Test("shutdown disconnects everything and refuses new work")

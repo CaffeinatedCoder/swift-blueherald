@@ -131,6 +131,17 @@ public struct SessionStatus: Sendable {
     public let activeScans: [ScanID]
     public let connections: [ConnectionSnapshot]
     public let subscriptions: [SubscriptionSnapshot]
+    /// Links dropped by a peripheral or the adapter that were not re-established, newest first.
+    public let linkLosses: [LinkLoss]
+}
+
+/// An established link that went away without being asked to. MCP clients may not show log
+/// notifications, so the session keeps these for the next call to report.
+public struct LinkLoss: Hashable, Sendable {
+    public let peripheral: PeripheralID
+    public let name: String?
+    public let reason: String?
+    public let at: Date
 }
 
 /// Things that happen without a request, for the server to forward to the client.

@@ -68,10 +68,28 @@ extension Advertisement {
 }
 
 extension BLEError {
-    /// Maps a CoreBluetooth or ATT error from a delegate callback.
-    init(_ error: any Error, during operation: String) {
-        let error = error as NSError
-        self = .attributeError(operation: operation, code: error.code, message: error.localizedDescription)
+    /// Maps a CoreBluetooth or ATT error from a delegate callback. Pairing problems get their
+    /// own codes: CoreBluetooth has no pairing API, so the error is all an agent gets to see.
+    package init(_ error: any Error, during operation: String) {
+        if let failure = Self(pairingFailure: error) {
+            self = failure
+        } else if let error = error as? CBATTError,
+            [.insufficientAuthentication, .insufficientEncryption, .insufficientEncryptionKeySize].contains(error.code)
+        {
+            self = .pairingRequired(operation: operation, reason: error.localizedDescription)
+        } else {
+            let error = error as NSError
+            self = .attributeError(operation: operation, code: error.code, message: error.localizedDescription)
+        }
+    }
+
+    /// The peripheral no longer has this Mac's keys, or encrypting the link timed out (for
+    /// instance because nobody confirmed the pairing dialog).
+    package init?(pairingFailure error: (any Error)?) {
+        guard let error = error as? CBError, [.peerRemovedPairingInformation, .encryptionTimedOut].contains(error.code) else {
+            return nil
+        }
+        self = .pairingFailed(reason: error.localizedDescription)
     }
 }
 

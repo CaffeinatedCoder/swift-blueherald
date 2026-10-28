@@ -8,6 +8,14 @@ public enum CentralState: String, Hashable, Sendable {
     case unauthorized
     case poweredOff = "powered_off"
     case poweredOn = "powered_on"
+    /// Not yet ready because macOS is asking whether this process may use Bluetooth, which
+    /// needs a person to answer.
+    case awaitingPermission = "awaiting_permission"
+
+    /// Not ready yet, but expected to become ready without anyone stepping in.
+    public var isSettling: Bool {
+        self == .unknown || self == .resetting
+    }
 }
 
 /// Out-of-band events the backend reports between calls.
@@ -23,9 +31,10 @@ public struct ConnectedPeripheral: Hashable, Sendable {
     public let id: PeripheralID
     public let name: String?
 
+    /// - Parameter name: The GAP name, cleaned with `DeviceText`.
     public init(id: PeripheralID, name: String?) {
         self.id = id
-        self.name = name
+        self.name = DeviceText.clean(name)
     }
 }
 

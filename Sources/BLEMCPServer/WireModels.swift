@@ -20,13 +20,25 @@ struct Bytes: Encodable {
     /// Present only when the bytes read as printable UTF-8 text of at least two characters,
     /// ignoring trailing NUL padding. Shorter values are nearly always numbers: a battery level
     /// of 89 would read "Y", and a little-endian 36 padded with a NUL would read "$".
+    /// Cut to `textLimit` characters; `hex` always holds the whole value.
     let utf8: String?
+    /// Set when `utf8` was cut.
+    let utf8Truncated: Bool?
     let length: Int
+
+    static let textLimit = 128
 
     init(_ data: Data) {
         hex = Hex.encode(data)
         length = data.count
-        utf8 = Self.printableText(data)
+        let text = Self.printableText(data)
+        if let text, text.count > Self.textLimit {
+            utf8 = String(text.prefix(Self.textLimit))
+            utf8Truncated = true
+        } else {
+            utf8 = text
+            utf8Truncated = nil
+        }
     }
 
     private static func printableText(_ data: Data) -> String? {
@@ -386,6 +398,13 @@ struct StatusReport: Encodable {
         }
     }
 
+    struct LinkLossReport: Encodable {
+        let peripheralId: String
+        let name: String?
+        let reason: String?
+        let at: Date
+    }
+
     struct Limits: Encodable {
         let maxConnections: Int
         let maxSubscriptions: Int
@@ -403,6 +422,8 @@ struct StatusReport: Encodable {
     let activeScans: [String]
     let connections: [ConnectionReport]
     let subscriptions: [SubscriptionReport]
+    /// Links a peripheral or the adapter dropped since, newest first; cleared on reconnect.
+    let linkLosses: [LinkLossReport]
 
     init(_ status: SessionStatus) {
         let configuration = status.configuration
@@ -419,5 +440,8 @@ struct StatusReport: Encodable {
         activeScans = status.activeScans.map(\.description)
         connections = status.connections.map { ConnectionReport($0, includeServices: false) }
         subscriptions = status.subscriptions.map(SubscriptionReport.init)
+        linkLosses = status.linkLosses.map {
+            LinkLossReport(peripheralId: $0.peripheral.description, name: $0.name, reason: $0.reason, at: $0.at)
+        }
     }
 }

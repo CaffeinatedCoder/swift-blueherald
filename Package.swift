@@ -87,6 +87,12 @@ let package = Package(
             swiftSettings: strictSettings
         ),
         .testTarget(
+            // Conversions only: nothing here creates a CBCentralManager or touches the radio.
+            name: "BLEMCPCoreBluetoothTests",
+            dependencies: ["BLEMCPCore", "BLEMCPCoreBluetooth"],
+            swiftSettings: strictSettings
+        ),
+        .testTarget(
             // Runs the built ble-mcp executable as a child process; no Bluetooth is used.
             name: "BLEMCPCommandTests",
             swiftSettings: strictSettings
