@@ -6,40 +6,62 @@ public import Foundation
 ///
 /// Loading is strict about structure (every line must be a JSON object) and lenient about
 /// content: a field with an unexpected type is treated as absent, since marker fields are free-form.
+/// Lines may end in `\n` or `\r\n`. A last line with no newline that is not a JSON object is a
+/// row the writer was cut off in (a crash, a full disk): it is left out and named in `warnings`.
 public struct CaptureRecording: Sendable {
     /// The file it came from, if any.
     public let source: String?
     public let rows: [CaptureRow]
+    /// What was left out while loading.
+    public let warnings: [String]
 
-    public init(rows: [CaptureRow], source: String? = nil) {
+    public init(rows: [CaptureRow], source: String? = nil, warnings: [String] = []) {
         self.rows = rows
         self.source = source
+        self.warnings = warnings
     }
 
     public init(contentsOf path: String) throws(CaptureReadError) {
         let path = NSString(string: path).expandingTildeInPath
-        let text: String
+        let data: Data
         do {
-            text = try String(contentsOfFile: path, encoding: .utf8)
+            data = try Data(contentsOf: URL(fileURLWithPath: path))
         } catch {
             throw CaptureReadError(source: path, line: nil, reason: error.localizedDescription)
         }
-        try self.init(jsonl: text, source: path)
+        try self.init(jsonl: data, source: path)
     }
 
     public init(jsonl text: String, source: String? = nil) throws(CaptureReadError) {
+        try self.init(jsonl: Data(text.utf8), source: source)
+    }
+
+    /// Lines are split as bytes and decoded one at a time, so a byte sequence cut short only
+    /// affects its own line.
+    public init(jsonl data: Data, source: String? = nil) throws(CaptureReadError) {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         var rows: [CaptureRow] = []
-        for (offset, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
-            guard line.contains(where: { !$0.isWhitespace }) else { continue }
+        var warnings: [String] = []
+        let lines = data.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: false)
+        for (offset, line) in lines.enumerated() {
+            let line = line.last == UInt8(ascii: "\r") ? line.dropLast() : line
+            guard line.contains(where: { !Self.isWhitespace($0) }) else { continue }
             do {
-                rows.append(CaptureRow(try decoder.decode(RawRow.self, from: Data(line.utf8)), line: offset + 1))
+                rows.append(CaptureRow(try decoder.decode(RawRow.self, from: line), line: offset + 1))
             } catch {
-                throw CaptureReadError(source: source, line: offset + 1, reason: "not a JSON object")
+                // The last element of the split follows the last newline: it is unterminated.
+                guard offset == lines.count - 1 else {
+                    throw CaptureReadError(source: source, line: offset + 1, reason: "not a JSON object")
+                }
+                warnings.append("Line \(offset + 1) was left out: it ends without a newline and is not a JSON object, as when a capture is cut off mid-write.")
             }
         }
-        self.init(rows: rows, source: source)
+        self.init(rows: rows, source: source, warnings: warnings)
+    }
+
+    private static func isWhitespace(_ byte: UInt8) -> Bool {
+        byte == UInt8(ascii: " ") || byte == UInt8(ascii: "\t") || byte == UInt8(ascii: "\r")
     }
 }
 
@@ -67,8 +89,12 @@ public struct CaptureRow: Hashable, Sendable {
     public let characteristic: BLEUUID?
     public let value: Data?
     public let note: String?
+    /// A label the agent placed. Its note is free text, never read as an event.
+    public let isMarker: Bool
 
     public let peripheral: PeripheralID?
+    /// The characteristic's service, on rows about an attribute; older captures have none.
+    public let service: BLEUUID?
     public let name: String?
     public let reason: String?
     public let mode: WriteMode?
@@ -89,7 +115,9 @@ public struct CaptureRow: Hashable, Sendable {
         characteristic: BLEUUID? = nil,
         value: Data? = nil,
         note: String? = nil,
+        isMarker: Bool = false,
         peripheral: PeripheralID? = nil,
+        service: BLEUUID? = nil,
         name: String? = nil,
         reason: String? = nil,
         mode: WriteMode? = nil,
@@ -108,7 +136,9 @@ public struct CaptureRow: Hashable, Sendable {
         self.characteristic = characteristic
         self.value = value
         self.note = note
+        self.isMarker = isMarker
         self.peripheral = peripheral
+        self.service = service
         self.name = name
         self.reason = reason
         self.mode = mode
@@ -136,6 +166,9 @@ public struct CaptureRow: Hashable, Sendable {
         case disconnected(PeripheralID?, reason: String?)
         /// swift-dragoman's probe scripts open with `device <identifier>`.
         case device(PeripheralID)
+        /// The first row of a run. A file a server appended to holds one run after another, each
+        /// with its clock starting at 0.
+        case runStarted
         case other
     }
 
@@ -153,8 +186,10 @@ public struct CaptureRow: Hashable, Sendable {
     }
 
     private var infoMeaning: Meaning {
-        guard let note else { return .other }
+        guard let note, !isMarker else { return .other }
         switch note {
+        case "capture started":
+            return .runStarted
         case "read":
             if let characteristic, let value { return .read(characteristic, value) }
         case "descriptor read":
@@ -208,7 +243,9 @@ private struct RawRow: Decodable {
     @Lenient var uuid: String?
     @Lenient var hex: String?
     @Lenient var note: String?
+    @Lenient var marker: Bool?
     @Lenient var peripheral: String?
+    @Lenient var service: String?
     @Lenient var name: String?
     @Lenient var reason: String?
     @Lenient var mode: String?
@@ -254,7 +291,9 @@ extension CaptureRow {
             characteristic: uuid(raw.uuid),
             value: raw.hex.flatMap { Hex.decode($0) },
             note: raw.note,
+            isMarker: raw.marker ?? false,
             peripheral: raw.peripheral.flatMap { PeripheralID($0) },
+            service: uuid(raw.service),
             name: raw.name,
             reason: raw.reason,
             mode: raw.mode.flatMap(WriteMode.init(rawValue:)),

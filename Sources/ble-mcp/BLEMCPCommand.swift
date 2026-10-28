@@ -57,6 +57,9 @@ enum BLEMCPCommand {
         if let replay = configuration.replay {
             do {
                 let recording = try CaptureRecording(contentsOf: replay.path)
+                for warning in recording.warnings {
+                    logger.warning("\(warning)", metadata: ["replay": "\(replay.path)"])
+                }
                 central = ReplayCentral(recording, options: ReplayCentral.Options(speed: replay.speed, isStrict: replay.isStrict))
             } catch {
                 fail(error.description, status: EX_NOINPUT)

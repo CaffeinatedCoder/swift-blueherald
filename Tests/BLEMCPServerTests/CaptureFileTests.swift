@@ -39,7 +39,7 @@ struct CaptureFileTests {
             at(9.328, .marker(note: "select AC V", fields: ["select": .string("G"), "expect_mode": .integer(1), "hex": .string("dropped")])),
             at(10, .read(address(uart, service: Fixtures.uartService), Data())),
             at(11.5, .writeFailed(address(BLEUUID(0xFF01)), descriptor: nil, .disconnected(peripheral, reason: nil))),
-            at(12, .marker(note: "quote \" and\nnewline", fields: ["ok": .bool(true), "ratio": .number(0.5)])),
+            at(12, .marker(note: "quote \" and\nnewline", fields: ["ok": .bool(true), "ratio": .number(0.5), "marker": .bool(false)])),
             at(61, .disconnected(peripheral, reason: "server shutting down")),
         ] {
             capture.record(event)
@@ -53,13 +53,13 @@ struct CaptureFileTests {
         #expect(
             Array(rows.dropFirst()) == [
                 #"{"t": 0.124, "dir": "info", "note": "connected", "name": "BB-500", "peripheral": "9D290B5A-71BE-5F31-2DB0-81271E936393"}"#,
-                #"{"t": 2.865, "dir": "info", "uuid": "ff02", "note": "notify enabled on ff02"}"#,
-                #"{"t": 2.865, "dir": "tx", "uuid": "ff01", "hex": "abcd03fd0278", "mode": "with_response"}"#,
-                #"{"t": 3.090, "dir": "rx", "uuid": "ff02", "hex": "abcd04ff00027b"}"#,
-                #"{"t": 9.328, "dir": "info", "note": "select AC V", "expect_mode": 1, "select": "G"}"#,
-                #"{"t": 10.000, "dir": "info", "uuid": "6e400003-b5a3-f393-e0a9-e50e24dcca9e", "hex": "", "note": "read"}"#,
-                #"{"t": 11.500, "dir": "info", "uuid": "ff01", "note": "write failed: Peripheral 9D290B5A-71BE-5F31-2DB0-81271E936393 disconnected.", "code": "disconnected"}"#,
-                #"{"t": 12.000, "dir": "info", "note": "quote \" and\nnewline", "ok": true, "ratio": 0.5}"#,
+                #"{"t": 2.865, "dir": "info", "uuid": "ff02", "note": "notify enabled on ff02", "peripheral": "9D290B5A-71BE-5F31-2DB0-81271E936393", "service": "ff00"}"#,
+                #"{"t": 2.865, "dir": "tx", "uuid": "ff01", "hex": "abcd03fd0278", "mode": "with_response", "peripheral": "9D290B5A-71BE-5F31-2DB0-81271E936393", "service": "ff00"}"#,
+                #"{"t": 3.090, "dir": "rx", "uuid": "ff02", "hex": "abcd04ff00027b", "peripheral": "9D290B5A-71BE-5F31-2DB0-81271E936393", "service": "ff00"}"#,
+                #"{"t": 9.328, "dir": "info", "note": "select AC V", "expect_mode": 1, "marker": true, "select": "G"}"#,
+                #"{"t": 10.000, "dir": "info", "uuid": "6e400003-b5a3-f393-e0a9-e50e24dcca9e", "hex": "", "note": "read", "peripheral": "9D290B5A-71BE-5F31-2DB0-81271E936393", "service": "6e400001-b5a3-f393-e0a9-e50e24dcca9e"}"#,
+                #"{"t": 11.500, "dir": "info", "uuid": "ff01", "note": "write failed: Peripheral 9D290B5A-71BE-5F31-2DB0-81271E936393 disconnected.", "code": "disconnected", "peripheral": "9D290B5A-71BE-5F31-2DB0-81271E936393", "service": "ff00"}"#,
+                #"{"t": 12.000, "dir": "info", "note": "quote \" and\nnewline", "marker": true, "ok": true, "ratio": 0.5}"#,
                 #"{"t": 61.000, "dir": "info", "note": "disconnected", "peripheral": "9D290B5A-71BE-5F31-2DB0-81271E936393", "reason": "server shutting down"}"#,
             ])
         // Every row is JSON on its own, with `t` as a number, which is all a fixture loader needs.
@@ -119,7 +119,7 @@ struct CaptureFileTests {
         #expect(rows.count == 3)
         #expect(rows[0].contains("earlier run"))
         #expect(rows[1].contains("capture started"))
-        #expect(rows[2] == #"{"t": 1.000, "dir": "rx", "uuid": "ff02", "hex": "01"}"#)
+        #expect(rows[2] == #"{"t": 1.000, "dir": "rx", "uuid": "ff02", "hex": "01", "peripheral": "9D290B5A-71BE-5F31-2DB0-81271E936393", "service": "ff00"}"#)
     }
 
     @Test("two runs started in the same second get separate files")

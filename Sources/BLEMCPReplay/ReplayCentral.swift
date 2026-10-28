@@ -8,7 +8,7 @@ public import Foundation
 /// recorded (or inferred) attribute tables. The rest follows the timeline of recorded requests:
 ///
 /// - A **write** is matched to the next unused recorded write of the same bytes to the same
-///   characteristic, and the notifications recorded after it are sent again with their recorded
+///   characteristic (in the same service, when the capture recorded services), and the notifications recorded after it are sent again with their recorded
 ///   delays (divided by `Options.speed`). A frame repeated after the recording ran out of copies
 ///   gets the replies of its latest earlier copy. A write the capture never made is accepted with
 ///   no reply and listed as a divergence in `report()`; with `Options.isStrict` it fails instead.
@@ -60,8 +60,21 @@ public actor ReplayCentral: BLECentral {
 
     private struct ReadKey: Hashable {
         let peripheral: PeripheralID
+        let service: BLEUUID
         let characteristic: BLEUUID
         let descriptor: BLEUUID?
+
+        init(_ address: CharacteristicAddress, descriptor: BLEUUID? = nil) {
+            peripheral = address.peripheral
+            service = address.service
+            characteristic = address.characteristic
+            self.descriptor = descriptor
+        }
+
+        func matches(_ read: ReplayScript.RecordedRead) -> Bool {
+            read.peripheral == peripheral && read.characteristic == characteristic && read.descriptor == descriptor
+                && (read.service == nil || read.service == service)
+        }
     }
 
     public init(_ recording: CaptureRecording, options: Options = Options()) {
@@ -93,7 +106,7 @@ public actor ReplayCentral: BLECentral {
         for device in script.devices {
             continuation.yield(
                 Advertisement(
-                    peripheral: device.id, name: device.name, rssi: device.rssi ?? Self.defaultRSSI,
+                    peripheral: device.id, name: device.advertisedName, rssi: device.rssi ?? Self.defaultRSSI,
                     isConnectable: device.isConnectable, serviceUUIDs: device.advertisedServices,
                     manufacturerData: device.manufacturerData, serviceData: device.serviceData,
                     txPowerLevel: device.txPowerLevel))
@@ -123,7 +136,7 @@ public actor ReplayCentral: BLECentral {
 
     public func read(_ characteristic: CharacteristicAddress) throws(BLEError) -> Data {
         try requireConnected(characteristic.peripheral)
-        return recordedRead(ReadKey(peripheral: characteristic.peripheral, characteristic: characteristic.characteristic, descriptor: nil))
+        return recordedRead(ReadKey(characteristic))
     }
 
     public func write(_ value: Data, to characteristic: CharacteristicAddress, mode: WriteMode) throws(BLEError) {
@@ -134,7 +147,7 @@ public actor ReplayCentral: BLECentral {
             let next = script.triggers.indices[min(position, script.triggers.count)...].first { index in
                 !used.contains(index) && script.triggers[index].peripheral == peripheral && script.triggers[index].request.isWrite
             }
-            guard let next, script.triggers[next].request == request else {
+            guard let next, script.triggers[next].request == request, script.triggers[next].isIn(characteristic.service) else {
                 let expected = next.map { "the next recorded write is \(describe(script.triggers[$0].request)) (line \(script.triggers[$0].line))" }
                     ?? "the capture has no writes left"
                 let message = "Strict replay: \(describe(request)) is not what the capture does next; \(expected)."
@@ -144,7 +157,7 @@ public actor ReplayCentral: BLECentral {
             play(next)
             return
         }
-        guard let index = match(request, on: peripheral) else {
+        guard let index = match(request, at: characteristic) else {
             diverge("No recorded \(describe(request)); the write was accepted without a reply.")
             return
         }
@@ -161,8 +174,7 @@ public actor ReplayCentral: BLECentral {
         {
             return Data(text.utf8)
         }
-        return recordedRead(
-            ReadKey(peripheral: characteristic.peripheral, characteristic: characteristic.characteristic, descriptor: descriptor.descriptor))
+        return recordedRead(ReadKey(characteristic, descriptor: descriptor.descriptor))
     }
 
     /// Accepted and forgotten: descriptor writes have no recorded answer to play.
@@ -177,7 +189,7 @@ public actor ReplayCentral: BLECentral {
             return
         }
         notifying.insert(characteristic)
-        if let index = match(.subscribe(characteristic.characteristic), on: characteristic.peripheral) {
+        if let index = match(.subscribe(characteristic.characteristic), at: characteristic) {
             play(index)
         }
     }
@@ -204,14 +216,17 @@ public actor ReplayCentral: BLECentral {
 
     /// The next unused recorded copy of `request` from the session's position on, or else the
     /// latest copy before it, so repeated frames keep getting answers.
-    private func match(_ request: ReplayScript.Request, on peripheral: PeripheralID) -> Int? {
+    private func match(_ request: ReplayScript.Request, at address: CharacteristicAddress) -> Int? {
         let triggers = script.triggers
+        let (peripheral, service) = (address.peripheral, address.service)
         for index in triggers.indices[min(position, triggers.count)...]
-        where !used.contains(index) && triggers[index].peripheral == peripheral && triggers[index].request == request {
+        where !used.contains(index) && triggers[index].peripheral == peripheral && triggers[index].request == request
+            && triggers[index].isIn(service)
+        {
             return index
         }
         for index in triggers.indices[..<min(position, triggers.count)].reversed()
-        where triggers[index].peripheral == peripheral && triggers[index].request == request {
+        where triggers[index].peripheral == peripheral && triggers[index].request == request && triggers[index].isIn(service) {
             return index
         }
         return nil
@@ -244,11 +259,13 @@ public actor ReplayCentral: BLECentral {
     private func deliver(_ reply: ReplayScript.Reply, to peripheral: PeripheralID) {
         guard connected.contains(peripheral) else { return }
         switch reply {
-        case .notification(let characteristic, let value):
+        case .notification(let characteristic, let value, let service):
             // Notifications go where the session subscribed, so they are never sent unasked.
-            guard let address = notifying.first(where: { $0.peripheral == peripheral && $0.characteristic == characteristic }) else {
-                return
-            }
+            guard
+                let address = notifying.first(where: {
+                    $0.peripheral == peripheral && $0.characteristic == characteristic && (service == nil || $0.service == service)
+                })
+            else { return }
             eventSink.yield(.valueUpdated(address, value, receivedAt: .now))
         case .linkLoss(let reason):
             connected.remove(peripheral)
@@ -273,10 +290,7 @@ public actor ReplayCentral: BLECentral {
     /// request that has not been replayed yet are not reached.
     private func recordedRead(_ key: ReadKey) -> Data {
         let reads = script.reads
-        let matching = reads.indices.filter {
-            reads[$0].peripheral == key.peripheral && reads[$0].characteristic == key.characteristic
-                && reads[$0].descriptor == key.descriptor
-        }
+        let matching = reads.indices.filter { key.matches(reads[$0]) }
         let reached = matching.filter { (reads[$0].afterTrigger ?? -1) < position }
         if let latest = reached.last(where: { !usedReads.contains($0) }) {
             usedReads.formUnion(reached.filter { $0 <= latest })
@@ -314,5 +328,12 @@ public actor ReplayCentral: BLECentral {
 extension ReplayScript.Request {
     fileprivate var isWrite: Bool {
         if case .write = self { true } else { false }
+    }
+}
+
+extension ReplayScript.Trigger {
+    /// Whether the request was made in `service`; a capture without services matches any.
+    fileprivate func isIn(_ service: BLEUUID) -> Bool {
+        self.service == nil || self.service == service
     }
 }

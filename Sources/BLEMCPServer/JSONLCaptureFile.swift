@@ -40,15 +40,10 @@ public final class JSONLCaptureFile: CaptureSink {
         }
         self.start = start
         self.logger = logger
-        record(
-            CaptureEvent(
-                time: start,
-                kind: .marker(
-                    note: "capture started",
-                    fields: [
-                        "server": .string("\(BLEMCPServer.name) \(BLEMCPServer.version)"),
-                        "started_at": .string(start.formatted(Date.ISO8601FormatStyle(includingFractionalSeconds: true))),
-                    ])))
+        let line = CaptureLine(startedAt: start)
+        queue.async { [self] in
+            append(line.text)
+        }
     }
 
     deinit {
@@ -124,11 +119,27 @@ public struct CaptureFileError: Error, CustomStringConvertible {
 
 /// One capture row. Keys come out in a fixed order (`t`, `dir`, `uuid`, `hex`, `note`, then the
 /// rest sorted) so captures read well and diff cleanly.
+///
+/// Rows about an attribute carry its `peripheral` and `service`, so captures of several devices,
+/// or of characteristics that share a UUID, can be told apart. The agent's markers carry
+/// `"marker": true`, so a note that reads like one of the writer's (`disconnected`, say) is never
+/// taken for that event, and the row that starts each run is the writer's own `capture started`.
 struct CaptureLine {
     /// Keys the format defines; marker fields may not use them.
-    static let reservedKeys: Set<String> = ["t", "dir", "uuid", "hex", "note"]
+    static let reservedKeys: Set<String> = ["t", "dir", "uuid", "hex", "note", "marker"]
 
     private var fields: [(String, String)] = []
+
+    /// The first row of a run: when it started and what wrote it.
+    init(startedAt start: Date) {
+        append("t", Self.seconds(0))
+        info(
+            note: "capture started",
+            [
+                "server": .string("\(BLEMCPServer.name) \(BLEMCPServer.version)"),
+                "started_at": .string(start.formatted(Date.ISO8601FormatStyle(includingFractionalSeconds: true))),
+            ])
+    }
 
     init(_ event: CaptureEvent, since start: Date) {
         append("t", Self.seconds(event.time.timeIntervalSince(start)))
@@ -154,37 +165,50 @@ struct CaptureLine {
         case .disconnected(let peripheral, let reason):
             info(note: "disconnected", ["peripheral": .string(peripheral.description), "reason": reason.map(CaptureValue.string)])
         case .notificationsEnabled(let address, let mode):
-            info(address.characteristic, note: "\(mode.rawValue) enabled on \(Self.uuid(address.characteristic))")
+            info(
+                address.characteristic, note: "\(mode.rawValue) enabled on \(Self.uuid(address.characteristic))",
+                Self.location(address))
         case .notificationsDisabled(let address):
-            info(address.characteristic, note: "notifications disabled on \(Self.uuid(address.characteristic))")
+            info(address.characteristic, note: "notifications disabled on \(Self.uuid(address.characteristic))", Self.location(address))
         case .write(let address, let value, let mode):
-            row("tx", address.characteristic, value)
-            append("mode", Self.string(mode.rawValue))
+            row("tx", address, value, ["mode": .string(mode.rawValue)])
         case .descriptorWrite(let address, let value):
-            info(address.characteristic.characteristic, value, note: "descriptor write", ["descriptor": .string(Self.uuid(address.descriptor))])
+            info(
+                address.characteristic.characteristic, value, note: "descriptor write",
+                Self.location(address.characteristic, ["descriptor": .string(Self.uuid(address.descriptor))]))
         case .writeFailed(let address, let descriptor, let error):
             info(
                 address.characteristic, note: "write failed: \(error.message)",
-                ["descriptor": descriptor.map { .string(Self.uuid($0)) }, "code": .string(error.code)])
+                Self.location(address, ["descriptor": descriptor.map { .string(Self.uuid($0)) }, "code": .string(error.code)]))
         case .notification(let address, let value):
-            row("rx", address.characteristic, value)
+            row("rx", address, value)
         case .read(let address, let value):
-            info(address.characteristic, value, note: "read")
+            info(address.characteristic, value, note: "read", Self.location(address))
         case .descriptorRead(let address, let value):
-            info(address.characteristic.characteristic, value, note: "descriptor read", ["descriptor": .string(Self.uuid(address.descriptor))])
+            info(
+                address.characteristic.characteristic, value, note: "descriptor read",
+                Self.location(address.characteristic, ["descriptor": .string(Self.uuid(address.descriptor))]))
         case .marker(let note, let markerFields):
-            info(note: note, markerFields.filter { !Self.reservedKeys.contains($0.key) }.mapValues(Optional.some))
+            var fields = markerFields.filter { !Self.reservedKeys.contains($0.key) }.mapValues(Optional.some)
+            fields["marker"] = .bool(true)
+            info(note: note, fields)
         }
+    }
+
+    /// Where an attribute row's characteristic is, merged into its other fields.
+    private static func location(_ address: CharacteristicAddress, _ fields: [String: CaptureValue?] = [:]) -> [String: CaptureValue?] {
+        fields.merging(["peripheral": .string(address.peripheral.description), "service": .string(uuid(address.service))]) { own, _ in own }
     }
 
     var text: String {
         "{" + fields.map { "\(Self.string($0.0)): \($0.1)" }.joined(separator: ", ") + "}"
     }
 
-    private mutating func row(_ direction: String, _ characteristic: BLEUUID, _ value: Data) {
+    private mutating func row(_ direction: String, _ address: CharacteristicAddress, _ value: Data, _ extra: [String: CaptureValue?] = [:]) {
         append("dir", Self.string(direction))
-        append("uuid", Self.string(Self.uuid(characteristic)))
+        append("uuid", Self.string(Self.uuid(address.characteristic)))
         append("hex", Self.string(Hex.encode(value)))
+        appendSorted(Self.location(address, extra).compactMapValues { $0.map(Self.json) })
     }
 
     /// - Parameter json: Fields already encoded as JSON, for the nested values only replays read;
@@ -202,6 +226,10 @@ struct CaptureLine {
         append("note", Self.string(note))
         var encoded = extra.compactMapValues { $0.map(Self.json) }
         encoded.merge(json.compactMapValues { $0 }) { scalar, _ in scalar }
+        appendSorted(encoded)
+    }
+
+    private mutating func appendSorted(_ encoded: [String: String]) {
         for (key, value) in encoded.sorted(by: { $0.key < $1.key }) {
             append(key, value)
         }

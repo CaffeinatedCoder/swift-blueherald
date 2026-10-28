@@ -151,8 +151,9 @@ public actor BLESession {
         try ensureScanCapacity()
         try await ensurePoweredOn()
         let stream = try await central.scan()
-        // Re-check after suspending: another call may have taken the last slot. Dropping the
-        // unused stream terminates it, which releases the backend scan.
+        // Re-check after suspending: the session may have shut down, or another call taken the
+        // last slot. Dropping the unused stream terminates it, which releases the backend scan.
+        guard !isShutDown else { throw .cancelled }
         try ensureScanCapacity()
 
         lastScanID += 1
@@ -279,6 +280,7 @@ public actor BLESession {
             if connections[id] == nil {
                 await central.disconnect(id)
             }
+            guard !isShutDown else { throw .cancelled }
             throw .disconnected(id, reason: "the connection was closed while it was being established")
         }
         connections[id]?.markConnected(name: peripheral.name ?? seen[id]?.name)
@@ -895,6 +897,8 @@ public actor BLESession {
         } catch .timedOut {
             throw .bluetoothUnavailable(await central.state())
         }
+        // The session may have shut down while the adapter came up.
+        guard !isShutDown else { throw .cancelled }
     }
 }
 

@@ -38,6 +38,11 @@ enum DiffCommand {
             FileHandle.standardError.write(Data("ble-mcp diff: \(error.description)\n".utf8))
             return 2
         }
+        for (path, recording) in [(paths[0], left), (paths[1], right)] {
+            for warning in recording.warnings {
+                FileHandle.standardError.write(Data("ble-mcp diff: \(path): \(warning)\n".utf8))
+            }
+        }
         let diff = CaptureDiff(left, right, kinds: kinds)
         print(diff.summary(leftName: paths[0], rightName: paths[1], limit: limit))
         return diff.isIdentical ? 0 : 1

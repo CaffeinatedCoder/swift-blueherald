@@ -125,6 +125,38 @@ struct StdioServerTransportTests {
         #expect(String(decoding: written, as: UTF8.self) == expected)
     }
 
+    /// A non-blocking pipe that is read slowly takes a large message in many short writes, and
+    /// `EAGAIN` in between: every byte must still arrive once, in order.
+    @Test("a large message survives short writes", .timeLimit(.minutes(1)))
+    func shortWrites() async throws {
+        let descriptor = output.fileHandleForWriting.fileDescriptor
+        #expect(fcntl(descriptor, F_SETFL, fcntl(descriptor, F_GETFL) | O_NONBLOCK) == 0)
+        let transport = makeTransport()
+        await transport.connect()
+        let message = Data((0..<(1 << 20)).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ $0 >> 9) })
+
+        let reader = output.fileHandleForReading.fileDescriptor
+        let expected = message.count + 1
+        let received = Task.detached {
+            var bytes = Data()
+            var chunk = [UInt8](repeating: 0, count: 4096)
+            while bytes.count < expected {
+                let count = chunk.withUnsafeMutableBytes { read(reader, $0.baseAddress, $0.count) }
+                guard count > 0 else { break }
+                bytes.append(contentsOf: chunk[..<count])
+                // Pause now and then, so the pipe fills and the writer meets EAGAIN.
+                if bytes.count % (64 * 1024) < count { try await Task.sleep(for: .milliseconds(1)) }
+            }
+            return bytes
+        }
+        try await transport.send(message)
+        // Whatever was not written by now never will be: end the reader at what arrived.
+        try output.fileHandleForWriting.close()
+        let bytes = try await received.value
+        #expect(bytes.count == message.count + 1)
+        #expect(bytes == message + Data([UInt8(ascii: "\n")]))
+    }
+
     @Test("a client that went away surfaces as an error, not SIGPIPE")
     func brokenPipe() async throws {
         let transport = makeTransport()

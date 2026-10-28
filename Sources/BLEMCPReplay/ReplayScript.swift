@@ -4,18 +4,26 @@ public import Foundation
 /// A capture turned into what a replay needs: the devices to advertise and serve, and a timeline
 /// of recorded requests, each with what the device sent after it.
 ///
-/// A request is a write or a subscription. Its replies are the notifications (and a link loss, if
-/// one happened) recorded after it and before the next request, with their delays. Reads are kept
-/// apart and answered by timeline position, see `ReplayCentral`.
+/// A request is a write or a subscription. Its replies are what the same device sent after it, up
+/// to that device's next request: notifications, and a link loss if one happened, with their
+/// delays. Reads are kept apart and answered by timeline position, see `ReplayCentral`.
 ///
-/// Older captures, and swift-dragoman's fixtures, have no `gatt` or `advertisement` rows. For a
-/// device without them the attribute table is inferred from the rows: written characteristics
-/// become writable, notifying ones notify, read ones are readable, all in one service with the
+/// Rows name their peripheral and service. Older captures, and swift-dragoman's fixtures, do not:
+/// their rows belong to the device last mentioned, on any service. A file a server appended to
+/// holds several runs; a request never takes replies from the next run.
+///
+/// Older captures also have no `gatt` or `advertisement` rows. For a device without them the
+/// attribute table is inferred from the rows: written characteristics become writable, notifying
+/// ones notify, read ones are readable, in their recorded services or else in one service with the
 /// UUID `inferredService`.
 public struct ReplayScript: Sendable {
     public struct Device: Hashable, Sendable {
         public let id: PeripheralID
+        /// The name it gave once connected (its GAP name).
         public let name: String?
+        /// The name scans saw. It can differ from `name`: an iPhone running a LightBlue virtual
+        /// device advertises the virtual device's name and connects as "iPhone".
+        public let advertisedName: String?
         public let rssi: Int?
         public let isConnectable: Bool?
         public let txPowerLevel: Int?
@@ -33,7 +41,8 @@ public struct ReplayScript: Sendable {
     }
 
     public enum Reply: Hashable, Sendable {
-        case notification(BLEUUID, Data)
+        /// The service is `nil` when the capture did not record it.
+        case notification(BLEUUID, Data, service: BLEUUID? = nil)
         case linkLoss(reason: String?)
     }
 
@@ -46,12 +55,15 @@ public struct ReplayScript: Sendable {
     public struct Trigger: Hashable, Sendable {
         public let peripheral: PeripheralID
         public let request: Request
+        /// The service of the request's characteristic, `nil` when the capture did not record it.
+        public let service: BLEUUID?
         public let line: Int
         public let replies: [Step]
     }
 
     public struct RecordedRead: Hashable, Sendable {
         public let peripheral: PeripheralID
+        public let service: BLEUUID?
         public let characteristic: BLEUUID
         public let descriptor: BLEUUID?
         public let value: Data
@@ -76,9 +88,10 @@ public struct ReplayScript: Sendable {
         for row in recording.rows {
             builder.add(row)
         }
-        builder.finishTrigger()
         devices = builder.devices()
-        triggers = builder.triggers
+        triggers = builder.drafts.map {
+            Trigger(peripheral: $0.peripheral, request: $0.request, service: $0.service, line: $0.line, replies: $0.replies)
+        }
         reads = builder.reads
     }
 
@@ -88,13 +101,30 @@ public struct ReplayScript: Sendable {
         var advertisements: [PeripheralID: CaptureRow] = [:]
         var names: [PeripheralID: String] = [:]
         var tables: [PeripheralID: [GATTService]] = [:]
-        var usage: [PeripheralID: [BLEUUID: Usage]] = [:]
-        var usageOrder: [PeripheralID: [BLEUUID]] = [:]
+        var usage: [PeripheralID: [Attribute: Usage]] = [:]
+        var usageOrder: [PeripheralID: [Attribute]] = [:]
+        /// The device rows without a peripheral belong to.
         var current: PeripheralID?
 
-        var triggers: [Trigger] = []
+        /// Every request in recorded order; replies are added while it is open.
+        var drafts: [Draft] = []
+        /// Each device's latest request, while what the device sends still answers it.
+        var open: [PeripheralID: Int] = [:]
         var reads: [RecordedRead] = []
-        var open: (peripheral: PeripheralID, request: Request, line: Int, time: Double, replies: [Step])?
+
+        struct Draft {
+            let peripheral: PeripheralID
+            let request: Request
+            let service: BLEUUID?
+            let line: Int
+            let time: Double
+            var replies: [Step] = []
+        }
+
+        struct Attribute: Hashable {
+            let service: BLEUUID?
+            let characteristic: BLEUUID
+        }
 
         struct Usage {
             var properties: CharacteristicProperties = []
@@ -106,88 +136,111 @@ public struct ReplayScript: Sendable {
             current = id
         }
 
-        var peripheral: PeripheralID {
-            mutating get {
-                if let current { return current }
-                mention(ReplayScript.inferredPeripheral)
-                return ReplayScript.inferredPeripheral
+        /// The row's peripheral, or for older captures the device last mentioned.
+        mutating func device(of row: CaptureRow) -> PeripheralID {
+            if let id = row.peripheral {
+                mention(id)
+                return id
             }
+            if let current { return current }
+            mention(ReplayScript.inferredPeripheral)
+            return ReplayScript.inferredPeripheral
         }
 
-        mutating func use(_ characteristic: BLEUUID, _ properties: CharacteristicProperties, descriptor: BLEUUID? = nil) {
-            let id = peripheral
-            if usage[id]?[characteristic] == nil { usageOrder[id, default: []].append(characteristic) }
-            usage[id, default: [:]][characteristic, default: Usage()].properties.formUnion(properties)
-            if let descriptor, usage[id]?[characteristic]?.descriptors.contains(descriptor) == false {
-                usage[id]?[characteristic]?.descriptors.append(descriptor)
+        mutating func use(
+            _ characteristic: BLEUUID, in service: BLEUUID?, on id: PeripheralID, _ properties: CharacteristicProperties,
+            descriptor: BLEUUID? = nil
+        ) {
+            let attribute = Attribute(service: service, characteristic: characteristic)
+            if usage[id]?[attribute] == nil { usageOrder[id, default: []].append(attribute) }
+            usage[id, default: [:]][attribute, default: Usage()].properties.formUnion(properties)
+            if let descriptor, usage[id]?[attribute]?.descriptors.contains(descriptor) == false {
+                usage[id]?[attribute]?.descriptors.append(descriptor)
             }
         }
 
         mutating func add(_ row: CaptureRow) {
             switch row.meaning {
+            case .runStarted:
+                // A new run: its clock starts again, and its devices are mentioned afresh.
+                open.removeAll()
+                current = nil
             case .advertisement(let id):
                 mention(id)
                 advertisements[id] = row
-            case .connected(let id, let name):
-                if let id { mention(id) }
-                if let name { names[peripheral] = name }
+            case .connected(_, let name):
+                let id = device(of: row)
+                if let name { names[id] = name }
             case .device(let id):
                 mention(id)
-            case .gatt(let id, let services):
-                if let id { mention(id) }
-                tables[peripheral] = services
+            case .gatt(_, let services):
+                tables[device(of: row)] = services
             case .write(let characteristic, let value, let mode):
+                let id = device(of: row)
                 let properties: CharacteristicProperties =
                     switch mode {
                     case .withResponse: .write
                     case .withoutResponse: .writeWithoutResponse
                     case nil: [.write, .writeWithoutResponse]
                     }
-                use(characteristic, properties)
-                startTrigger(.write(characteristic, value), row: row)
+                use(characteristic, in: row.service, on: id, properties)
+                startRequest(.write(characteristic, value), on: id, row: row)
             case .notificationsEnabled(let characteristic, let mode):
-                use(characteristic, mode == .notify ? .notify : .indicate, descriptor: GATTDescriptor.clientCharacteristicConfiguration)
-                startTrigger(.subscribe(characteristic), row: row)
+                let id = device(of: row)
+                use(
+                    characteristic, in: row.service, on: id, mode == .notify ? .notify : .indicate,
+                    descriptor: GATTDescriptor.clientCharacteristicConfiguration)
+                startRequest(.subscribe(characteristic), on: id, row: row)
             case .notification(let characteristic, let value):
+                let id = device(of: row)
                 // Values of an indicating characteristic arrive as rx rows too.
-                let isSubscribable = usage[peripheral]?[characteristic]?.properties.isDisjoint(with: [.notify, .indicate]) == false
-                use(characteristic, isSubscribable ? [] : .notify, descriptor: GATTDescriptor.clientCharacteristicConfiguration)
+                let attribute = Attribute(service: row.service, characteristic: characteristic)
+                let isSubscribable = usage[id]?[attribute]?.properties.isDisjoint(with: [.notify, .indicate]) == false
+                use(
+                    characteristic, in: row.service, on: id, isSubscribable ? [] : .notify,
+                    descriptor: GATTDescriptor.clientCharacteristicConfiguration)
                 // Notifications with no request before them (a capture started mid-stream) are
                 // played once the agent subscribes.
-                if open == nil { startTrigger(.subscribe(characteristic), row: row) }
-                let start = open?.time ?? row.time
-                open?.replies.append(Step(reply: .notification(characteristic, value), delay: row.time - start))
+                if open[id] == nil { startRequest(.subscribe(characteristic), on: id, row: row) }
+                reply(.notification(characteristic, value, service: row.service), on: id, at: row.time)
             case .read(let characteristic, let value):
-                use(characteristic, .read)
-                reads.append(RecordedRead(peripheral: peripheral, characteristic: characteristic, descriptor: nil, value: value, afterTrigger: lastTrigger))
+                let id = device(of: row)
+                use(characteristic, in: row.service, on: id, .read)
+                reads.append(
+                    RecordedRead(
+                        peripheral: id, service: row.service, characteristic: characteristic, descriptor: nil, value: value,
+                        afterTrigger: lastRequest))
             case .descriptorRead(let characteristic, let descriptor, let value):
-                use(characteristic, [], descriptor: descriptor)
-                reads.append(RecordedRead(peripheral: peripheral, characteristic: characteristic, descriptor: descriptor, value: value, afterTrigger: lastTrigger))
+                let id = device(of: row)
+                use(characteristic, in: row.service, on: id, [], descriptor: descriptor)
+                reads.append(
+                    RecordedRead(
+                        peripheral: id, service: row.service, characteristic: characteristic, descriptor: descriptor,
+                        value: value, afterTrigger: lastRequest))
             case .disconnected(_, let reason):
-                if let reason, !ReplayScript.requestedDisconnects.contains(reason), let start = open?.time {
-                    open?.replies.append(Step(reply: .linkLoss(reason: reason), delay: row.time - start))
+                let id = device(of: row)
+                if let reason, !ReplayScript.requestedDisconnects.contains(reason) {
+                    reply(.linkLoss(reason: reason), on: id, at: row.time)
                 }
-                finishTrigger()
+                open[id] = nil
             case .notificationsDisabled, .other:
                 break
             }
         }
 
-        /// Index the next trigger gets, minus one: the last trigger started so far.
-        var lastTrigger: Int? {
-            let count = triggers.count + (open == nil ? 0 : 1)
-            return count == 0 ? nil : count - 1
+        /// The last request recorded so far.
+        var lastRequest: Int? {
+            drafts.isEmpty ? nil : drafts.count - 1
         }
 
-        mutating func startTrigger(_ request: Request, row: CaptureRow) {
-            finishTrigger()
-            open = (peripheral, request, row.line, row.time, [])
+        mutating func startRequest(_ request: Request, on id: PeripheralID, row: CaptureRow) {
+            open[id] = drafts.count
+            drafts.append(Draft(peripheral: id, request: request, service: row.service, line: row.line, time: row.time))
         }
 
-        mutating func finishTrigger() {
-            guard let open else { return }
-            triggers.append(Trigger(peripheral: open.peripheral, request: open.request, line: open.line, replies: open.replies))
-            self.open = nil
+        mutating func reply(_ reply: Reply, on id: PeripheralID, at time: Double) {
+            guard let index = open[id] else { return }
+            drafts[index].replies.append(Step(reply: reply, delay: max(0, time - drafts[index].time)))
         }
 
         func devices() -> [Device] {
@@ -197,6 +250,7 @@ public struct ReplayScript: Sendable {
                 return Device(
                     id: id,
                     name: names[id] ?? advertisement?.name,
+                    advertisedName: advertisement?.name ?? names[id],
                     rssi: advertisement?.rssi,
                     isConnectable: advertisement?.isConnectable ?? true,
                     txPowerLevel: advertisement?.txPowerLevel,
@@ -208,13 +262,21 @@ public struct ReplayScript: Sendable {
             }
         }
 
+        /// One service per recorded service UUID, in order of first use; characteristics recorded
+        /// without one go to `inferredService`.
         func inferredTable(of id: PeripheralID) -> [GATTService] {
-            let characteristics = (usageOrder[id] ?? []).compactMap { uuid in
-                usage[id]?[uuid].map { usage in
-                    GATTCharacteristic(uuid: uuid, properties: usage.properties, descriptors: usage.descriptors.map(GATTDescriptor.init))
-                }
+            var services: [BLEUUID] = []
+            var characteristics: [BLEUUID: [GATTCharacteristic]] = [:]
+            for attribute in usageOrder[id] ?? [] {
+                guard let usage = usage[id]?[attribute] else { continue }
+                let service = attribute.service ?? ReplayScript.inferredService
+                if characteristics[service] == nil { services.append(service) }
+                characteristics[service, default: []].append(
+                    GATTCharacteristic(
+                        uuid: attribute.characteristic, properties: usage.properties,
+                        descriptors: usage.descriptors.map(GATTDescriptor.init)))
             }
-            return characteristics.isEmpty ? [] : [GATTService(uuid: ReplayScript.inferredService, characteristics: characteristics)]
+            return services.map { GATTService(uuid: $0, characteristics: characteristics[$0] ?? []) }
         }
     }
 }

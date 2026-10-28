@@ -123,4 +123,46 @@ struct SessionRaceTests {
         _ = await second.result
         #expect(await session.connectionSnapshots().isEmpty)
     }
+
+    @Test("a scan waiting for the adapter when the session shuts down never starts")
+    func scanAfterShutdown() async throws {
+        let central = FakeCentral(state: .unknown, devices: [meter])
+        let session = BLESession(central: central)
+        await session.start()
+        let scan = Task { try await session.startScan() }
+        try await Task.sleep(for: .milliseconds(50))
+        await session.shutdown()
+        await central.changeState(to: .poweredOn)
+        await #expect(throws: BLEError.cancelled) { try await scan.value }
+        try await waitUntil { await central.activeScanCount == 0 }
+    }
+
+    @Test("a connect waiting for the adapter when the session shuts down never reaches the radio")
+    func connectAfterShutdown() async throws {
+        let central = FakeCentral(state: .unknown, devices: [meter])
+        let session = BLESession(central: central)
+        await session.start()
+        let connect = Task { try await session.connect(meter.id, discover: false) }
+        try await Task.sleep(for: .milliseconds(50))
+        await session.shutdown()
+        await central.changeState(to: .poweredOn)
+        await #expect(throws: BLEError.cancelled) { try await connect.value }
+        #expect(await central.connectAttempts == 0)
+        #expect(await session.status().connections.isEmpty)
+    }
+
+    @Test("a connect in flight when the session shuts down leaves no link")
+    func connectDuringShutdown() async throws {
+        // FakeCentral's hang ends only on cancellation; CoreBluetooth fails it on disconnect.
+        let session = BLESession(
+            central: central, configuration: SessionConfiguration(timeouts: SessionTimeouts(connect: .milliseconds(200))))
+        await session.start()
+        await central.setConnectBehavior(.hang)
+        let connect = Task { try await session.connect(meter.id, discover: false) }
+        try await waitUntil { await central.connectAttempts == 1 }
+        await session.shutdown()
+        await #expect(throws: BLEError.self) { try await connect.value }
+        #expect(await central.disconnectRequests.contains(meter.id))
+        #expect(await session.status().connections.isEmpty)
+    }
 }
