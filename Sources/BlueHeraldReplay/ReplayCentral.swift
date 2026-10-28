@@ -244,7 +244,7 @@ public actor ReplayCentral: BLECentral {
         let token = lastDelivery
         let speed = options.speed
         let start = ContinuousClock.now
-        let task = Task { [weak self] in
+        let task = Task(name: "blueherald.replay.replies-\(token)") { [weak self] in
             for step in trigger.replies {
                 if speed > 0, step.delay > 0 {
                     try? await Task.sleep(until: start + .seconds(step.delay / speed), clock: .continuous)
