@@ -2,13 +2,13 @@
 import PackageDescription
 
 // Layers, from the bottom up:
-//   BLEMCPCore           domain model, the BLECentral backend protocol and the BLESession actor; no platform I/O
-//   BLEMCPCoreBluetooth  the Apple backend: a CBCentralManager bridged into an actor running on its own queue
-//   BLEMCPReplay         the offline backend: plays a JSONL capture through the same seam; also diffs captures
-//   BLEMCPServer         the MCP adapter: configuration, JSON schemas, tool registry and the tool catalogue
-//   ble-mcp              composition root: reads the environment, wires the backend and serves over stdio
+//   BlueHeraldCore           domain model, the BLECentral backend protocol and the BLESession actor; no platform I/O
+//   BlueHeraldCoreBluetooth  the Apple backend: a CBCentralManager bridged into an actor running on its own queue
+//   BlueHeraldReplay         the offline backend: plays a JSONL capture through the same seam; also diffs captures
+//   BlueHeraldMCP            the MCP adapter: configuration, JSON schemas, tool registry and the tool catalogue
+//   blueherald               composition root: reads the environment, wires the backend and serves over stdio
 //
-// Every module carries the BLEMCP prefix so this package can be linked next to device libraries
+// Every module carries the BlueHerald prefix so this package can be linked next to device libraries
 // such as swift-dragoman (DragomanCore, DragomanCoreBluetooth, DragomanTesting, ...) without
 // module name clashes.
 
@@ -23,14 +23,14 @@ let strictSettings: [SwiftSetting] = [
 ]
 
 let package = Package(
-    name: "swift-ble-mcp",
+    name: "swift-blueherald",
     platforms: [.macOS(.v26)],
     products: [
-        .executable(name: "ble-mcp", targets: ["ble-mcp"]),
-        .library(name: "BLEMCPCore", targets: ["BLEMCPCore"]),
-        .library(name: "BLEMCPCoreBluetooth", targets: ["BLEMCPCoreBluetooth"]),
-        .library(name: "BLEMCPReplay", targets: ["BLEMCPReplay"]),
-        .library(name: "BLEMCPServer", targets: ["BLEMCPServer"]),
+        .executable(name: "blueherald", targets: ["blueherald"]),
+        .library(name: "BlueHeraldCore", targets: ["BlueHeraldCore"]),
+        .library(name: "BlueHeraldCoreBluetooth", targets: ["BlueHeraldCoreBluetooth"]),
+        .library(name: "BlueHeraldReplay", targets: ["BlueHeraldReplay"]),
+        .library(name: "BlueHeraldMCP", targets: ["BlueHeraldMCP"]),
     ],
     dependencies: [
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.12.1"),
@@ -38,35 +38,35 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "BLEMCPCore",
+            name: "BlueHeraldCore",
             swiftSettings: strictSettings
         ),
         .target(
-            name: "BLEMCPCoreBluetooth",
-            dependencies: ["BLEMCPCore"],
+            name: "BlueHeraldCoreBluetooth",
+            dependencies: ["BlueHeraldCore"],
             swiftSettings: strictSettings
         ),
         .target(
-            name: "BLEMCPReplay",
-            dependencies: ["BLEMCPCore"],
+            name: "BlueHeraldReplay",
+            dependencies: ["BlueHeraldCore"],
             swiftSettings: strictSettings
         ),
         .target(
-            name: "BLEMCPServer",
+            name: "BlueHeraldMCP",
             dependencies: [
-                "BLEMCPCore",
+                "BlueHeraldCore",
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "Logging", package: "swift-log"),
             ],
             swiftSettings: strictSettings
         ),
         .executableTarget(
-            name: "ble-mcp",
+            name: "blueherald",
             dependencies: [
-                "BLEMCPCore",
-                "BLEMCPCoreBluetooth",
-                "BLEMCPReplay",
-                "BLEMCPServer",
+                "BlueHeraldCore",
+                "BlueHeraldCoreBluetooth",
+                "BlueHeraldReplay",
+                "BlueHeraldMCP",
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "Logging", package: "swift-log"),
             ],
@@ -79,50 +79,50 @@ let package = Package(
                     "-Xlinker", "-sectcreate",
                     "-Xlinker", "__TEXT",
                     "-Xlinker", "__info_plist",
-                    "-Xlinker", Context.packageDirectory + "/Sources/ble-mcp/Info.plist",
+                    "-Xlinker", Context.packageDirectory + "/Sources/blueherald/Info.plist",
                 ])
             ]
         ),
 
         .target(
-            name: "BLEMCPTestSupport",
-            dependencies: ["BLEMCPCore"],
-            path: "Tests/BLEMCPTestSupport",
+            name: "BlueHeraldTestSupport",
+            dependencies: ["BlueHeraldCore"],
+            path: "Tests/BlueHeraldTestSupport",
             swiftSettings: strictSettings
         ),
         .testTarget(
-            name: "BLEMCPCoreTests",
-            dependencies: ["BLEMCPCore", "BLEMCPTestSupport"],
+            name: "BlueHeraldCoreTests",
+            dependencies: ["BlueHeraldCore", "BlueHeraldTestSupport"],
             swiftSettings: strictSettings
         ),
         .testTarget(
             // Conversions only: nothing here creates a CBCentralManager or touches the radio.
-            name: "BLEMCPCoreBluetoothTests",
-            dependencies: ["BLEMCPCore", "BLEMCPCoreBluetooth"],
+            name: "BlueHeraldCoreBluetoothTests",
+            dependencies: ["BlueHeraldCore", "BlueHeraldCoreBluetooth"],
             swiftSettings: strictSettings
         ),
         .testTarget(
-            name: "BLEMCPReplayTests",
+            name: "BlueHeraldReplayTests",
             dependencies: [
-                "BLEMCPCore",
-                "BLEMCPReplay",
-                "BLEMCPServer",
-                "BLEMCPTestSupport",
+                "BlueHeraldCore",
+                "BlueHeraldReplay",
+                "BlueHeraldMCP",
+                "BlueHeraldTestSupport",
             ],
             resources: [.copy("Fixtures")],
             swiftSettings: strictSettings
         ),
         .testTarget(
-            // Runs the built ble-mcp executable as a child process; no Bluetooth is used.
-            name: "BLEMCPCommandTests",
+            // Runs the built blueherald executable as a child process; no Bluetooth is used.
+            name: "BlueHeraldCommandTests",
             swiftSettings: strictSettings
         ),
         .testTarget(
-            name: "BLEMCPServerTests",
+            name: "BlueHeraldMCPTests",
             dependencies: [
-                "BLEMCPCore",
-                "BLEMCPServer",
-                "BLEMCPTestSupport",
+                "BlueHeraldCore",
+                "BlueHeraldMCP",
+                "BlueHeraldTestSupport",
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "Logging", package: "swift-log"),
             ],

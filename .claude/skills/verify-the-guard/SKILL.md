@@ -32,10 +32,10 @@ the fact, so do step 3 always, even when you did step 1.
 
 ```bash
 SCRATCH=$(mktemp -d)
-cp Sources/BLEMCPCore/BLESession.swift "$SCRATCH/"
+cp Sources/BlueHeraldCore/BLESession.swift "$SCRATCH/"
 # remove just the fix, then:
-swift test --filter BLEMCPCoreTests
-cp "$SCRATCH/BLESession.swift" Sources/BLEMCPCore/
+swift test --filter BlueHeraldCoreTests
+cp "$SCRATCH/BLESession.swift" Sources/BlueHeraldCore/
 ```
 
 Revert the **source**, never the test. `git checkout --` on a file that also holds unrelated work
@@ -76,7 +76,7 @@ Check these before believing a green run:
 There is no fix to revert; the counterfactual is to **seed the defect**: add a tool without its
 README row, change the README count, rename a capture field, drop a `peripheral` key from a row, and
 confirm the convention test names it. Match structure (a table row, a JSON key), not a substring
-that also occurs in prose. `Tests/BLEMCPServerTests/ReadmeConventionTests.swift` is the model.
+that also occurs in prose. `Tests/BlueHeraldMCPTests/ReadmeConventionTests.swift` is the model.
 
 ## Tests that legitimately pass either way
 

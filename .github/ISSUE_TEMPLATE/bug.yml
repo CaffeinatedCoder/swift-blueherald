@@ -12,7 +12,7 @@ body:
     id: version
     attributes:
       label: Version
-      description: The output of `ble-mcp --version`, or the commit.
+      description: The output of `blueherald --version`, or the commit.
     validations:
       required: true
   - type: dropdown
@@ -31,8 +31,8 @@ body:
       label: Where does it happen?
       options:
         - Against a real peripheral (CoreBluetooth)
-        - In a replay (BLE_MCP_REPLAY)
-        - In a capture or in ble-mcp diff
+        - In a replay (BLUEHERALD_REPLAY)
+        - In a capture or in blueherald diff
         - Only in a release build
         - I'm not sure
     validations:
@@ -60,4 +60,4 @@ body:
     id: environment
     attributes:
       label: Environment
-      description: macOS and Swift versions, the MCP client, and the relevant `BLE_MCP_*` settings.
+      description: macOS and Swift versions, the MCP client, and the relevant `BLUEHERALD_*` settings.

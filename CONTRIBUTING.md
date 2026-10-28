@@ -55,7 +55,7 @@ and never sends bytes nobody wrote.
 re-reads. `ReadmeConventionTests` holds the README's tool table and count against the catalogue.
 
 **A real device is the authority on CoreBluetooth.** The fakes encode what we believe it does. A change
-to `BLEMCPCoreBluetooth` is not done until `Scripts/hardware-smoke.swift` has passed with a release
+to `BlueHeraldCoreBluetooth` is not done until `Scripts/hardware-smoke.swift` has passed with a release
 build.
 
 ## Issues

@@ -43,7 +43,7 @@ through the same callback.
 - A characteristic UUID can appear in two services of one device, and two connected devices can expose
   the same table. Does every row, lookup and match carry the peripheral and the service, or does it
   key on the UUID alone (`ambiguous_characteristic` exists for this)?
-- Peripheral ids are per Mac. Does anything compare them across captures or hosts (`ble-mcp diff`
+- Peripheral ids are per Mac. Does anything compare them across captures or hosts (`blueherald diff`
   must not)?
 - An attempt, a subscription or a scan that outlives its owner: does it remove or claim only its own
   entry (connect attempts carry an attempt number for this reason)?

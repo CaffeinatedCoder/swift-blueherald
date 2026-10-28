@@ -1,6 +1,6 @@
-# swift-ble-mcp
+# BlueHerald
 
-A Bluetooth Low Energy [Model Context Protocol](https://modelcontextprotocol.io) server for macOS, written in Swift 6. It lets an AI agent scan for BLE devices, connect, explore their GATT tables, read and write characteristics, stream notifications and record everything as a JSONL capture, all through 19 typed MCP tools. A capture can be played back in place of the radio, so agents, device libraries and tests can work with a recorded device when the real one is out of reach.
+BlueHerald is a Bluetooth Low Energy [Model Context Protocol](https://modelcontextprotocol.io) server for macOS, written in Swift 6. It lets an AI agent scan for BLE devices, connect, explore their GATT tables, read and write characteristics, stream notifications and record everything as a JSONL capture, all through 19 typed MCP tools. A capture can be played back in place of the radio, so agents, device libraries and tests can work with a recorded device when the real one is out of reach.
 
 It is inspired by [es617/ble-mcp-server](https://github.com/es617/ble-mcp-server) and [Hypijump31/bluetooth-mcp-server](https://github.com/Hypijump31/bluetooth-mcp-server), and built natively on CoreBluetooth and the official [MCP Swift SDK](https://github.com/modelcontextprotocol/swift-sdk).
 
@@ -8,7 +8,7 @@ It is inspired by [es617/ble-mcp-server](https://github.com/es617/ble-mcp-server
 
 ```bash
 swift build -c release
-claude mcp add ble -- "$PWD/.build/release/ble-mcp"
+claude mcp add ble -- "$PWD/.build/release/blueherald"
 ```
 
 Then ask your agent something like *"Scan for BLE devices and read the battery level of the strongest one."*
@@ -16,18 +16,18 @@ Then ask your agent something like *"Scan for BLE devices and read the battery l
 The server is **read-only by default**. To let the agent write to devices:
 
 ```bash
-claude mcp add ble -e BLE_MCP_ALLOW_WRITES=1 -e BLE_MCP_WRITE_ALLOWLIST=6E400002-B5A3-F393-E0A9-E50E24DCCA9E -- "$PWD/.build/release/ble-mcp"
+claude mcp add ble -e BLUEHERALD_ALLOW_WRITES=1 -e BLUEHERALD_WRITE_ALLOWLIST=6E400002-B5A3-F393-E0A9-E50E24DCCA9E -- "$PWD/.build/release/blueherald"
 ```
 
-A characteristic allowlist lets any value through. For a device whose commands share one characteristic, list the exact frames instead: `BLE_MCP_WRITE_VALUE_ALLOWLIST=ff01:abcd03fd0278` (or a file of them via `BLE_MCP_WRITE_VALUE_ALLOWLIST_FILE`) restricts `ff01` to those frames, and `BLE_MCP_WRITE_DENYLIST` names characteristics that are never written, whatever else is configured.
+A characteristic allowlist lets any value through. For a device whose commands share one characteristic, list the exact frames instead: `BLUEHERALD_WRITE_VALUE_ALLOWLIST=ff01:abcd03fd0278` (or a file of them via `BLUEHERALD_WRITE_VALUE_ALLOWLIST_FILE`) restricts `ff01` to those frames, and `BLUEHERALD_WRITE_DENYLIST` names characteristics that are never written, whatever else is configured.
 
-For other clients, launch `ble-mcp` as a stdio server and pass the variables below as its environment.
+For other clients, launch `blueherald` as a stdio server and pass the variables below as its environment.
 
 ### Bluetooth permission
 
-The first BLE operation triggers the macOS prompt *"ble-mcp would like to use Bluetooth"*. Accept it. Until you do, `ble_status` reports `adapter_state: awaiting_permission` and other tools fail with `bluetooth_unavailable` and a hint. The first start after ble-mcp is rebuilt or updated can also take several seconds while macOS checks the new binary; `ble_status` waits for that rather than reporting `unknown`.
+The first BLE operation triggers the macOS prompt *"blueherald would like to use Bluetooth"*. Accept it. Until you do, `ble_status` reports `adapter_state: awaiting_permission` and other tools fail with `bluetooth_unavailable` and a hint. The first start after blueherald is rebuilt or updated can also take several seconds while macOS checks the new binary; `ble_status` waits for that rather than reporting `unknown`.
 
-macOS normally attributes a command-line tool's privacy permissions to the app that launched it. If that app (Claude, an IDE) has no Bluetooth usage description, macOS kills the tool outright. `ble-mcp` therefore relaunches itself once at startup as its own "responsible process", so the permission belongs to `ble-mcp` regardless of the launcher. Set `BLE_MCP_OWN_PERMISSION=0` to turn this off.
+macOS normally attributes a command-line tool's privacy permissions to the app that launched it. If that app (Claude, an IDE) has no Bluetooth usage description, macOS kills the tool outright. `blueherald` therefore relaunches itself once at startup as its own "responsible process", so the permission belongs to `blueherald` regardless of the launcher. Set `BLUEHERALD_OWN_PERMISSION=0` to turn this off.
 
 Development builds are ad-hoc signed, so each rebuild is a new identity to macOS and may ask again.
 
@@ -66,10 +66,10 @@ Device names, 0x2901 descriptions and the text of values come from the devices t
 
 ## Capturing a session
 
-Set `BLE_MCP_CAPTURE` to a directory (each run gets its own `ble-mcp-<date>-<time>.jsonl`) or to a file (appended to). Every write, notification, read and link change is then recorded as one JSON line, in the format swift-dragoman's `CaptureLog` loads as a test fixture:
+Set `BLUEHERALD_CAPTURE` to a directory (each run gets its own `blueherald-<date>-<time>.jsonl`) or to a file (appended to). Every write, notification, read and link change is then recorded as one JSON line, in the format swift-dragoman's `CaptureLog` loads as a test fixture:
 
 ```json
-{"t": 0.000, "dir": "info", "note": "capture started", "server": "ble-mcp 0.1.0", "started_at": "2026-10-28T05:20:00.000Z"}
+{"t": 0.000, "dir": "info", "note": "capture started", "server": "blueherald 0.1.0", "started_at": "2026-10-28T05:20:00.000Z"}
 {"t": 2.865, "dir": "info", "uuid": "ff02", "note": "notify enabled on ff02", "peripheral": "9D290B5A-71BE-5F31-2DB0-81271E936393", "service": "fff0"}
 {"t": 2.865, "dir": "info", "note": "select AC V", "expect_mode": 1, "marker": true, "select": "G"}
 {"t": 2.866, "dir": "tx", "uuid": "ff01", "hex": "abcd03fd0278", "mode": "with_response", "peripheral": "9D290B5A-71BE-5F31-2DB0-81271E936393", "service": "fff0"}
@@ -82,63 +82,63 @@ Two `info` rows exist for replays. When the session connects, it records what sc
 
 ## Replaying a capture
 
-Set `BLE_MCP_REPLAY` to a capture and the server plays it instead of using Bluetooth. No radio is involved, no permission is asked, and it also runs where CoreBluetooth doesn't exist. Recorded devices advertise, accept connections and return their recorded attribute tables. The rest follows the recorded timeline:
+Set `BLUEHERALD_REPLAY` to a capture and the server plays it instead of using Bluetooth. No radio is involved, no permission is asked, and it also runs where CoreBluetooth doesn't exist. Recorded devices advertise, accept connections and return their recorded attribute tables. The rest follows the recorded timeline:
 
-- **Writes.** A write is matched to the next unused recorded write of the same bytes to the same characteristic of the same device (and service, where the capture recorded it). The notifications that followed it are sent again with their recorded delays, divided by `BLE_MCP_REPLAY_SPEED` (`0` sends them at once). A frame repeated more often than recorded gets the replies of its latest copy. A frame the capture never sent is accepted with no reply and listed under `backend.divergences` in `ble_status`. With `BLE_MCP_REPLAY_STRICT=1` it fails instead, naming the write the capture makes next.
+- **Writes.** A write is matched to the next unused recorded write of the same bytes to the same characteristic of the same device (and service, where the capture recorded it). The notifications that followed it are sent again with their recorded delays, divided by `BLUEHERALD_REPLAY_SPEED` (`0` sends them at once). A frame repeated more often than recorded gets the replies of its latest copy. A frame the capture never sent is accepted with no reply and listed under `backend.divergences` in `ble_status`. With `BLUEHERALD_REPLAY_STRICT=1` it fails instead, naming the write the capture makes next.
 - **Subscriptions** are matched the same way, so a device that streams once subscribed streams again.
 - **Reads** return the latest value recorded up to that point in the timeline. A read after a replayed write therefore sees what the device answered then.
 - **Link losses** that were recorded happen again.
 
-Writes still need `BLE_MCP_ALLOW_WRITES` and pass the allowlists, so an agent configured for the real device behaves the same against the replay.
+Writes still need `BLUEHERALD_ALLOW_WRITES` and pass the allowlists, so an agent configured for the real device behaves the same against the replay.
 
 Older captures, and swift-dragoman's fixtures, have no `advertisement` or `gatt` rows. For those the attribute table is inferred: written characteristics become writable, notifying ones notify and read ones are readable, in their recorded services, or in one service `52455050-4C41-5900-0000-000000000000` ("REPLAY" in ASCII) when the rows name none. The peripheral id comes from the row, else from the latest `connected` row or `device <id>` note. Captures written before rows named their peripheral therefore replay correctly only for one device at a time, and their markers can still be mistaken for events.
 
 ```bash
-BLE_MCP_REPLAY=bb500-sweep.jsonl BLE_MCP_REPLAY_SPEED=0 BLE_MCP_ALLOW_WRITES=1 ble-mcp
+BLUEHERALD_REPLAY=bb500-sweep.jsonl BLUEHERALD_REPLAY_SPEED=0 BLUEHERALD_ALLOW_WRITES=1 blueherald
 ```
 
-`BLEMCPReplay` is also a library product: `ReplayCentral` slots into a `BLESession` like any backend, for tests of code built on the session.
+`BlueHeraldReplay` is also a library product: `ReplayCentral` slots into a `BLESession` like any backend, for tests of code built on the session.
 
 ### Comparing captures
 
 ```bash
-ble-mcp diff before.jsonl after.jsonl [--kinds tx,rx,read] [--limit 20]
+blueherald diff before.jsonl after.jsonl [--kinds tx,rx,read] [--limit 20]
 ```
 
-Compares writes, notifications and characteristic reads by characteristic and bytes, in order, and by service when both captures recorded services. Timing, peripheral ids (they differ between Macs), markers and other `info` rows are ignored. It prints the counts on each side and each difference with its line number, and exits 0 when the captures match, 1 when they differ and 2 on unreadable input, so it can gate CI. The regression loop: record a session, replay it with `BLE_MCP_CAPTURE` on while running the same steps, and diff the two captures.
+Compares writes, notifications and characteristic reads by characteristic and bytes, in order, and by service when both captures recorded services. Timing, peripheral ids (they differ between Macs), markers and other `info` rows are ignored. It prints the counts on each side and each difference with its line number, and exits 0 when the captures match, 1 when they differ and 2 on unreadable input, so it can gate CI. The regression loop: record a session, replay it with `BLUEHERALD_CAPTURE` on while running the same steps, and diff the two captures.
 
 ## Configuration
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `BLE_MCP_ALLOW_WRITES` | off | `1`/`true`/`yes` enables the write tools |
-| `BLE_MCP_WRITE_ALLOWLIST` | all | Comma-separated characteristic UUIDs that may be written with any value; descriptor writes are checked against their characteristic |
-| `BLE_MCP_WRITE_VALUE_ALLOWLIST` | none | Comma-separated `characteristic:hex` frames, e.g. `ff01:abcd03fd0278`; a listed characteristic accepts only its frames |
-| `BLE_MCP_WRITE_VALUE_ALLOWLIST_FILE` | none | A file with one `characteristic:hex` frame per line (`#` starts a comment), merged with the above |
-| `BLE_MCP_WRITE_DENYLIST` | none | Comma-separated characteristic UUIDs that are never written |
-| `BLE_MCP_CAPTURE` | off | Directory or file for the [JSONL capture](#capturing-a-session) |
-| `BLE_MCP_MAX_CONNECTIONS` | 4 | Simultaneous connections (1–32) |
-| `BLE_MCP_MAX_SUBSCRIPTIONS` | 32 | Active subscriptions (1–512) |
-| `BLE_MCP_MAX_SCANS` | 4 | Concurrent background scans (1–16) |
-| `BLE_MCP_NOTIFICATION_BUFFER` | 1024 | Values kept per subscription; the oldest are dropped first and counted |
-| `BLE_MCP_CONNECT_TIMEOUT_MS` | 15000 | Connection timeout |
-| `BLE_MCP_OPERATION_TIMEOUT_MS` | 10000 | Read, write, subscribe and RSSI timeout |
-| `BLE_MCP_LOG_LEVEL` | warning | stderr log level; `info` logs every tool call with its duration |
-| `BLE_MCP_OWN_PERMISSION` | 1 | See [Bluetooth permission](#bluetooth-permission) |
-| `BLE_MCP_REPLAY` | off | A JSONL capture to [play instead of using Bluetooth](#replaying-a-capture) |
-| `BLE_MCP_REPLAY_SPEED` | 1 | Replay pace: `1` as recorded, `2` twice as fast, `0` without delays (0–1000) |
-| `BLE_MCP_REPLAY_STRICT` | off | Fail writes the capture does not make next, instead of accepting them without a reply |
+| `BLUEHERALD_ALLOW_WRITES` | off | `1`/`true`/`yes` enables the write tools |
+| `BLUEHERALD_WRITE_ALLOWLIST` | all | Comma-separated characteristic UUIDs that may be written with any value; descriptor writes are checked against their characteristic |
+| `BLUEHERALD_WRITE_VALUE_ALLOWLIST` | none | Comma-separated `characteristic:hex` frames, e.g. `ff01:abcd03fd0278`; a listed characteristic accepts only its frames |
+| `BLUEHERALD_WRITE_VALUE_ALLOWLIST_FILE` | none | A file with one `characteristic:hex` frame per line (`#` starts a comment), merged with the above |
+| `BLUEHERALD_WRITE_DENYLIST` | none | Comma-separated characteristic UUIDs that are never written |
+| `BLUEHERALD_CAPTURE` | off | Directory or file for the [JSONL capture](#capturing-a-session) |
+| `BLUEHERALD_MAX_CONNECTIONS` | 4 | Simultaneous connections (1–32) |
+| `BLUEHERALD_MAX_SUBSCRIPTIONS` | 32 | Active subscriptions (1–512) |
+| `BLUEHERALD_MAX_SCANS` | 4 | Concurrent background scans (1–16) |
+| `BLUEHERALD_NOTIFICATION_BUFFER` | 1024 | Values kept per subscription; the oldest are dropped first and counted |
+| `BLUEHERALD_CONNECT_TIMEOUT_MS` | 15000 | Connection timeout |
+| `BLUEHERALD_OPERATION_TIMEOUT_MS` | 10000 | Read, write, subscribe and RSSI timeout |
+| `BLUEHERALD_LOG_LEVEL` | warning | stderr log level; `info` logs every tool call with its duration |
+| `BLUEHERALD_OWN_PERMISSION` | 1 | See [Bluetooth permission](#bluetooth-permission) |
+| `BLUEHERALD_REPLAY` | off | A JSONL capture to [play instead of using Bluetooth](#replaying-a-capture) |
+| `BLUEHERALD_REPLAY_SPEED` | 1 | Replay pace: `1` as recorded, `2` twice as fast, `0` without delays (0–1000) |
+| `BLUEHERALD_REPLAY_STRICT` | off | Fail writes the capture does not make next, instead of accepting them without a reply |
 
-An invalid value stops the server at startup with a message naming the variable. It is never silently replaced by a default. Run `ble-mcp --help` for the same list.
+An invalid value stops the server at startup with a message naming the variable. It is never silently replaced by a default. Run `blueherald --help` for the same list.
 
 ## Architecture
 
 ```
-ble-mcp              composition root: environment, logging, signals, stdio
-BLEMCPServer         MCP adapter: ToolArgument schemas, ToolDefinition catalogue, wire models
-BLEMCPCoreBluetooth  BLECentral on CoreBluetooth
-BLEMCPReplay         BLECentral that plays a capture; capture loading and diffing
-BLEMCPCore           domain model, BLECentral protocol, BLESession actor (no platform I/O)
+blueherald               composition root: environment, logging, signals, stdio
+BlueHeraldMCP            MCP adapter: ToolArgument schemas, ToolDefinition catalogue, wire models
+BlueHeraldCoreBluetooth  BLECentral on CoreBluetooth
+BlueHeraldReplay         BLECentral that plays a capture; capture loading and diffing
+BlueHeraldCore           domain model, BLECentral protocol, BLESession actor (no platform I/O)
 ```
 
 - **`BLESession`** (actor) owns all state: scans, connections, subscriptions and their ring buffers. Everything leaves it as immutable snapshot values. Because actors are re-entrant, every method that suspends re-validates its preconditions afterwards and claims capacity *before* awaiting, so concurrent calls cannot overshoot a limit.
@@ -152,7 +152,7 @@ Swift features in use: Swift 6 language mode with complete concurrency checking,
 
 ### Adding device-specific tools
 
-`BLEMCPServer(session:additionalTools:)` accepts extra `ToolDefinition`s that share the session. A device library can therefore offer high-level tools, such as `bb500_read_measurement`, on top of the connections and subscriptions the agent created, using the same typed argument system. Module names carry a `BLEMCP` prefix so this package links cleanly next to device packages such as swift-dragoman (`DragomanCore`, `DragomanCoreBluetooth`, `DragomanTesting`).
+`BlueHeraldServer(session:additionalTools:)` accepts extra `ToolDefinition`s that share the session. A device library can therefore offer high-level tools, such as `bb500_read_measurement`, on top of the connections and subscriptions the agent created, using the same typed argument system. Module names carry a `BlueHerald` prefix so this package links cleanly next to device packages such as swift-dragoman (`DragomanCore`, `DragomanCoreBluetooth`, `DragomanTesting`).
 
 ## Development
 
@@ -161,7 +161,7 @@ swift build
 swift test                       # no Bluetooth hardware needed (FakeCentral and ReplayCentral)
 swift test -c release            # the same, optimised
 swift test --sanitize=thread
-npx @modelcontextprotocol/inspector .build/debug/ble-mcp
+npx @modelcontextprotocol/inspector .build/debug/blueherald
 ```
 
 The tests run against `FakeCentral`, so they cannot cover `CoreBluetoothCentral`. Check changes there with a **release** build against a real device: the optimiser has changed how its actor hops behave before. `Scripts/hardware-smoke.swift` does that in about ten seconds, read-only, and exits non-zero on any failure:
@@ -173,10 +173,10 @@ swift Scripts/hardware-smoke.swift --name iPhone --read 2A29,2A19 --subscribe 2A
 
 It scans, connects, reads, subscribes, disconnects, stops the server with SIGTERM while connected and checks the capture it wrote. `--transact ff01:abcd03fd0278:ff02:abcd04ff` adds one request/reply exchange; only then does the script write, and the server it starts allows exactly that frame.
 
-The script passes its environment on to the server, so it can also run against the capture it just wrote, with no device. Then `ble-mcp diff` should report the two captures identical:
+The script passes its environment on to the server, so it can also run against the capture it just wrote, with no device. Then `blueherald diff` should report the two captures identical:
 
 ```bash
-BLE_MCP_REPLAY=/path/to/its/capture.jsonl swift Scripts/hardware-smoke.swift --name iPhone --read 2A29,2A19 --subscribe 2A2B
+BLUEHERALD_REPLAY=/path/to/its/capture.jsonl swift Scripts/hardware-smoke.swift --name iPhone --read 2A29,2A19 --subscribe 2A2B
 ```
 
 Requires macOS 26 and Swift 6.4 or later (Xcode 27).

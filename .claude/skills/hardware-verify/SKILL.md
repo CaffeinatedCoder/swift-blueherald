@@ -1,6 +1,6 @@
 ---
 name: hardware-verify
-description: Check a ble-mcp change against a real Bluetooth peripheral with a release build, because the unit tests run against FakeCentral and cannot see CoreBluetoothCentral. Use after any change to BLEMCPCoreBluetooth, to actor, continuation or cancellation code anywhere, to the stdio transport or shutdown, and before a release.
+description: Check a BlueHerald change against a real Bluetooth peripheral with a release build, because the unit tests run against FakeCentral and cannot see CoreBluetoothCentral. Use after any change to BlueHeraldCoreBluetooth, to actor, continuation or cancellation code anywhere, to the stdio transport or shutdown, and before a release.
 ---
 
 # Hardware verify
@@ -35,13 +35,13 @@ the script makes, and the server it starts allows exactly that frame. Choose a f
 harmless for the device (an authentication hello, a read-style command), never one you have not read the
 protocol for.
 
-To check replay, record one run with `BLE_MCP_CAPTURE`, then run the script again against
-`BLE_MCP_REPLAY` of that file and `ble-mcp diff` the two captures: they should be identical.
+To check replay, record one run with `BLUEHERALD_CAPTURE`, then run the script again against
+`BLUEHERALD_REPLAY` of that file and `blueherald diff` the two captures: they should be identical.
 
 ## Reading a failure
 
 - **"Scan finds the peripheral" fails:** the peripheral is not advertising (app in the background,
-  phone locked, device idle), or it advertises under another name. Not a ble-mcp bug until you have
+  phone locked, device idle), or it advertises under another name. Not a BlueHerald bug until you have
   confirmed it with another scanner.
 - **Timeout on first call after a rebuild:** the permission prompt is waiting.
 - **A step fails only in release:** treat it as a real finding. Look first at actor hops and
@@ -52,7 +52,7 @@ To check replay, record one run with `BLE_MCP_CAPTURE`, then run the script agai
 ## Rules
 
 - Never write to a characteristic you do not own. Restrict writes with
-  `BLE_MCP_WRITE_VALUE_ALLOWLIST` to exact frames, and keep `BLE_MCP_ALLOW_WRITES` off otherwise.
+  `BLUEHERALD_WRITE_VALUE_ALLOWLIST` to exact frames, and keep `BLUEHERALD_ALLOW_WRITES` off otherwise.
 - Do not install the build over the copy another session or project uses without a temporary name and
   a `mv`; that session may be running it.
 

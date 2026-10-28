@@ -15,5 +15,5 @@ DerivedData/
 /.claude/settings.local.json
 
 # Captures written while trying the server out (Tests/**/Fixtures are tracked)
-/ble-mcp-*.jsonl
+/blueherald-*.jsonl
 /.claude/worktrees/

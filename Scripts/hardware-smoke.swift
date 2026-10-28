@@ -1,5 +1,5 @@
 #!/usr/bin/env swift
-// Checks a ble-mcp build against a real peripheral: the part the unit tests cannot reach,
+// Checks a blueherald build against a real peripheral: the part the unit tests cannot reach,
 // because they run against FakeCentral. Use a release build; the optimiser has changed how
 // CoreBluetoothCentral's actor hops behave before.
 //
@@ -14,7 +14,7 @@
 //   --transact C:HEX:R[:PREFIX]
 //                        write the frame HEX to characteristic C with ble_transact and expect a
 //                        reply on R (starting with PREFIX); the only write the script ever makes
-//   --binary PATH        the server to test (default: .build/release/ble-mcp)
+//   --binary PATH        the server to test (default: .build/release/blueherald)
 //
 // Without --transact it never writes to the device; with it, the server is started with exactly
 // that one frame on its write allowlist. For a Voltcraft BB-500, the harmless known-device auth:
@@ -28,7 +28,7 @@ import Foundation
 // MARK: - Options
 
 struct Options {
-    var binary = ".build/release/ble-mcp"
+    var binary = ".build/release/blueherald"
     var name: String?
     var peripheral: String?
     var reads = ["2A29"]
@@ -63,7 +63,7 @@ struct Options {
 
 // MARK: - A server over stdio
 
-/// Runs ble-mcp as a child process and matches JSON-RPC responses to requests by id.
+/// Runs blueherald as a child process and matches JSON-RPC responses to requests by id.
 final class Server: @unchecked Sendable {
     let process = Process()
     private let input = Pipe()
@@ -162,17 +162,17 @@ guard FileManager.default.isExecutableFile(atPath: options.binary) else {
     Options.usage("no executable at \(options.binary); run swift build -c release first")
 }
 
-let workspace = FileManager.default.temporaryDirectory.appendingPathComponent("ble-mcp-smoke-\(UUID().uuidString)")
+let workspace = FileManager.default.temporaryDirectory.appendingPathComponent("blueherald-smoke-\(UUID().uuidString)")
 try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
 let log = workspace.appendingPathComponent("server.log")
 let report = Report()
-print("ble-mcp hardware smoke test: \(options.binary)\nlogs and capture: \(workspace.path)\n")
+print("blueherald hardware smoke test: \(options.binary)\nlogs and capture: \(workspace.path)\n")
 
-var environment = ["BLE_MCP_LOG_LEVEL": "info", "BLE_MCP_CAPTURE": workspace.path]
+var environment = ["BLUEHERALD_LOG_LEVEL": "info", "BLUEHERALD_CAPTURE": workspace.path]
 if let exchange = options.transact {
     // Writes stay off for everything but this one frame.
-    environment["BLE_MCP_ALLOW_WRITES"] = "1"
-    environment["BLE_MCP_WRITE_VALUE_ALLOWLIST"] = "\(exchange.characteristic):\(exchange.frame)"
+    environment["BLUEHERALD_ALLOW_WRITES"] = "1"
+    environment["BLUEHERALD_WRITE_VALUE_ALLOWLIST"] = "\(exchange.characteristic):\(exchange.frame)"
 }
 let server = try Server(binary: options.binary, environment: environment, log: log)
 
