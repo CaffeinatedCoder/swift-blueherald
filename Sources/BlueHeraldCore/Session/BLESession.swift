@@ -27,6 +27,8 @@ public actor BLESession {
     private var connections = ConnectionTable()
     private var subscriptions = SubscriptionTable()
     private var waiters = WaiterQueue<CheckedContinuation<Void, Never>>()
+    /// Resumed with `true` once the reply subscription is theirs, `false` on shutdown.
+    private var transactions = TransactionQueue<CheckedContinuation<Bool, Never>>()
 
     /// - Parameter capture: Receives every write, notification, read and link change, in order.
     public init(
@@ -68,6 +70,7 @@ public actor BLESession {
         }
         connections.removeAll()
         waiters.takeAll().forEach { $0.resume() }
+        transactions.takeAll().forEach { $0.resume(returning: false) }
         eventPump?.cancel()
         eventPump = nil
         eventSink.finish()
@@ -357,16 +360,27 @@ public actor BLESession {
         to selector: CharacteristicSelector,
         mode requestedMode: WriteMode? = nil
     ) async throws(BLEError) -> WriteReceipt {
+        try await send(try await prepareWrite(value, to: selector, mode: requestedMode))
+    }
+
+    /// Everything a write checks before it goes out, some of which suspends.
+    private func prepareWrite(
+        _ value: Data,
+        to selector: CharacteristicSelector,
+        mode requestedMode: WriteMode?
+    ) async throws(BLEError) -> PreparedWrite {
         // Policy first: a refused frame never causes discovery, let alone reaches the radio.
         try configuration.writePolicy.checkWrite(value, to: selector.characteristic)
         let target = try await resolve(selector)
-
         let mode = try target.writeMode(requested: requestedMode)
-
-        let central = central
-        let address = target.address
-        let maximum = try await central.maximumWriteLength(for: address.peripheral, mode: mode)
+        let maximum = try await central.maximumWriteLength(for: target.address.peripheral, mode: mode)
         guard value.count <= maximum else { throw .payloadTooLarge(size: value.count, maximum: maximum) }
+        return PreparedWrite(value: value, address: target.address, mode: mode)
+    }
+
+    private func send(_ write: PreparedWrite) async throws(BLEError) -> WriteReceipt {
+        let central = central
+        let (value, address, mode) = (write.value, write.address, write.mode)
         capture(.write(address, value, mode))
         do {
             try await withDeadline(configuration.timeouts.operation, operation: "Writing \(address.characteristic)") {
@@ -439,7 +453,9 @@ public actor BLESession {
     /// The reply characteristic is subscribed to before the write, so even an immediate answer is
     /// caught, and the subscription stays open so the next exchange is just as safe. The reply is
     /// taken out of the buffer; anything else that arrived stays readable with `notifications`.
-    /// Not having an answer is not an error: the write happened, and the result says so.
+    /// Exchanges that wait on the same reply characteristic run one after the other, so neither
+    /// can take the other's answer. Not having an answer is not an error: the write happened,
+    /// and the result says so.
     public func transact(
         _ value: Data,
         to selector: CharacteristicSelector,
@@ -450,18 +466,21 @@ public actor BLESession {
     ) async throws(BLEError) -> Transaction {
         // Policy first, as in `write`: a refused frame must not even cause a subscription.
         try configuration.writePolicy.checkWrite(value, to: selector.characteristic)
-        let id = try await subscribe(replySelector).id
-        let mark = subscriptions.lastSequence
-        let sentAt = Date.now
-        let receipt = try await write(value, to: selector, mode: mode)
+        let id = try await claimReplies(on: replySelector)
+        defer { releaseReplies(on: id) }
+        let write = try await prepareWrite(value, to: selector, mode: mode)
+        // Opened only now, with nothing left to wait for before the write goes out: whatever
+        // arrived while the write was being prepared is not its answer.
+        let window = subscriptions.replyWindow()
+        let receipt = try await send(write)
 
         let clock = ContinuousClock()
         let deadline = clock.now + timeout
-        var reply = subscriptions.takeFirst(on: id, after: mark, prefix: prefix)
+        var reply = subscriptions.takeFirst(on: id, in: window, prefix: prefix)
         // A cancelled wait returns at once, so cancellation must end the loop.
         while reply == nil, subscriptions[id]?.isOpen == true, clock.now < deadline, !Task.isCancelled {
             await waitForNotification(on: id, timeout: deadline - clock.now)
-            reply = subscriptions.takeFirst(on: id, after: mark, prefix: prefix)
+            reply = subscriptions.takeFirst(on: id, in: window, prefix: prefix)
         }
         if reply == nil, Task.isCancelled {
             throw .cancelled
@@ -474,10 +493,51 @@ public actor BLESession {
         return Transaction(
             write: receipt,
             reply: reply,
-            latency: reply.map { .milliseconds(Int(($0.receivedAt.timeIntervalSince(sentAt) * 1000).rounded())) },
-            unmatched: subscriptions.unmatched(on: id, after: mark, prefix: prefix),
+            latency: reply.map { .milliseconds(Int(($0.receivedAt.timeIntervalSince(window.sentAt) * 1000).rounded())) },
+            unmatched: subscriptions.unmatched(on: id, in: window, prefix: prefix),
             subscription: subscription.snapshot,
             timeout: timeout)
+    }
+
+    /// Subscribes to `selector` and waits until no other transaction waits on that subscription.
+    /// Returns it open and claimed; the caller releases it.
+    private func claimReplies(on selector: CharacteristicSelector) async throws(BLEError) -> SubscriptionID {
+        while true {
+            let id = try await subscribe(selector).id
+            let token = transactions.nextToken()
+            // Isolation passed explicitly, as in `waitForNotification`.
+            let claimed = await withTaskCancellationHandler(
+                operation: {
+                    await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                        guard !Task.isCancelled else {
+                            continuation.resume(returning: false)
+                            return
+                        }
+                        if transactions.enter(id, token: token, waker: continuation) {
+                            continuation.resume(returning: true)
+                        }
+                    }
+                },
+                onCancel: { Task { await self.withdrawClaim(token) } },
+                isolation: self)
+            guard claimed else { throw .cancelled }
+            // Cancelled just as it was handed over: pass it on.
+            guard !Task.isCancelled else {
+                releaseReplies(on: id)
+                throw .cancelled
+            }
+            // Waiting for the turn can take a whole exchange; the subscription may be gone by now.
+            if subscriptions[id]?.isOpen == true { return id }
+            releaseReplies(on: id)
+        }
+    }
+
+    private func releaseReplies(on id: SubscriptionID) {
+        transactions.leave(id)?.resume(returning: true)
+    }
+
+    private func withdrawClaim(_ token: UInt64) {
+        transactions.withdraw(token)?.resume(returning: false)
     }
 
     // MARK: - Subscriptions
@@ -692,4 +752,11 @@ public actor BLESession {
         // The session may have shut down while the adapter came up.
         guard !isShutDown else { throw .cancelled }
     }
+}
+
+/// A write that has passed every check and only has to go out.
+private struct PreparedWrite: Sendable {
+    let value: Data
+    let address: CharacteristicAddress
+    let mode: WriteMode
 }

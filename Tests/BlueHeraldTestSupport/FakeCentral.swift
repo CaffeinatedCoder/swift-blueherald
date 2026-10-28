@@ -81,6 +81,15 @@ public actor FakeCentral: BLECentral {
     private var maximumWriteLengths: (withResponse: Int, withoutResponse: Int) = (512, 20)
     private var responder: Responder?
     private var responseDelay = Duration.zero
+    private var held: Set<Checkpoint> = []
+    /// How many calls are stopped at each checkpoint right now.
+    public private(set) var waiting: [Checkpoint: Int] = [:]
+
+    /// A request a test can stop, to act while the session waits for it.
+    public enum Checkpoint: Hashable, Sendable {
+        case maximumWriteLength
+        case write
+    }
 
     public init(state: CentralState = .poweredOn, devices: [Device] = []) {
         let (events, eventSink) = AsyncStream.makeStream(of: CentralEvent.self)
@@ -123,6 +132,15 @@ public actor FakeCentral: BLECentral {
     public func setResponder(delay: Duration = .zero, _ responder: Responder?) {
         self.responder = responder
         responseDelay = delay
+    }
+
+    /// Stops every call of `checkpoint` from now on until `release`. Cancellation still ends it.
+    public func hold(_ checkpoint: Checkpoint) {
+        held.insert(checkpoint)
+    }
+
+    public func release(_ checkpoint: Checkpoint) {
+        held.remove(checkpoint)
     }
 
     public func setMaximumWriteLengths(withResponse: Int, withoutResponse: Int) {
@@ -224,6 +242,7 @@ public actor FakeCentral: BLECentral {
     }
 
     public func write(_ value: Data, to address: CharacteristicAddress, mode: WriteMode) async throws(BLEError) {
+        try await pass(.write)
         try await behave(writeBehavior)
         _ = try device(address.peripheral)
         devices[address.peripheral]?.values[address.characteristic] = value
@@ -281,7 +300,8 @@ public actor FakeCentral: BLECentral {
         try device(id).rssi
     }
 
-    public func maximumWriteLength(for id: PeripheralID, mode: WriteMode) throws(BLEError) -> Int {
+    public func maximumWriteLength(for id: PeripheralID, mode: WriteMode) async throws(BLEError) -> Int {
+        try await pass(.maximumWriteLength)
         _ = try device(id)
         return mode == .withResponse ? maximumWriteLengths.withResponse : maximumWriteLengths.withoutResponse
     }
@@ -298,6 +318,20 @@ public actor FakeCentral: BLECentral {
         case .succeed: return
         case .fail(let error): throw error
         case .hang: try await hang()
+        }
+    }
+
+    private func pass(_ checkpoint: Checkpoint) async throws(BLEError) {
+        guard held.contains(checkpoint) else { return }
+        waiting[checkpoint, default: 0] += 1
+        defer { waiting[checkpoint, default: 1] -= 1 }
+        // Polls, like `waitUntilPoweredOn`; a held request ends on cancellation like a hanging one.
+        while held.contains(checkpoint) {
+            do {
+                try await Task.sleep(for: .milliseconds(1))
+            } catch {
+                throw .cancelled
+            }
         }
     }
 

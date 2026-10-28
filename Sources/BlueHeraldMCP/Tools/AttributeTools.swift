@@ -55,7 +55,8 @@ enum AttributeTools {
                 Writes a frame and waits for the device's answer: the first notification on reply_uuid \
                 after the write, optionally only one starting with reply_prefix. One call instead of \
                 subscribe, write and wait, and no race with a fast reply: reply_uuid is subscribed to \
-                before the write, and that subscription stays open for the next exchange. Returns the \
+                before the write, and that subscription stays open for the next exchange. Exchanges \
+                that wait on the same reply_uuid run one after the other. Returns the \
                 reply with its latency, or a note when none came; other notifications stay readable \
                 with ble_notifications. Changes real hardware and follows the same write policy as ble_write.
                 """,

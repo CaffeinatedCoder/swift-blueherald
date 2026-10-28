@@ -251,15 +251,31 @@ struct SubscriptionTableTests {
         let again = table.activate(id)
         #expect(activated && !again)
         _ = table.record(Data([0xAA, 1]), from: uart, receivedAt: .now)
-        let mark = table.lastSequence
+        let window = table.replyWindow(sentAt: .distantPast)
         _ = table.record(Data([0xBB, 2]), from: uart, receivedAt: .now)
         _ = table.record(Data([0xAA, 3]), from: uart, receivedAt: .now)
-        #expect(table.unmatched(on: id, after: mark, prefix: Data([0xAA])) == 1)
-        let reply = table.takeFirst(on: id, after: mark, prefix: Data([0xAA]))
-        let none = table.takeFirst(on: id, after: mark, prefix: Data([0xAA]))
+        #expect(table.unmatched(on: id, in: window, prefix: Data([0xAA])) == 1)
+        let reply = table.takeFirst(on: id, in: window, prefix: Data([0xAA]))
+        let none = table.takeFirst(on: id, in: window, prefix: Data([0xAA]))
         #expect(reply?.value == Data([0xAA, 3]))
         #expect(none == nil)
         #expect(table.bufferedCount(in: id) == 2)
+    }
+
+    @Test("a reply window holds what came after its mark and was received no earlier than the write")
+    func replyWindow() {
+        var table = SubscriptionTable()
+        let id = add(&table, uart)
+        _ = table.activate(id)
+        let sentAt = Date.now
+        _ = table.record(Data([1]), from: uart, receivedAt: sentAt)
+        let window = table.replyWindow(sentAt: sentAt)
+        // Received before the write, recorded after the mark: handed over late.
+        _ = table.record(Data([2]), from: uart, receivedAt: sentAt - 0.001)
+        _ = table.record(Data([3]), from: uart, receivedAt: sentAt)
+        #expect(table.unmatched(on: id, in: window, prefix: Data([0xFF])) == 1)
+        #expect(table.takeFirst(on: id, in: window, prefix: Data())?.value == Data([3]))
+        #expect(table.takeFirst(on: id, in: window, prefix: Data()) == nil)
     }
 }
 
@@ -301,5 +317,45 @@ struct WaiterQueueTests {
         let second = queue.remove(token)
         #expect(first == "timed")
         #expect(second == nil)
+    }
+}
+
+@Suite("TransactionQueue")
+struct TransactionQueueTests {
+    let a = SubscriptionID(rawValue: 1)
+    let b = SubscriptionID(rawValue: 2)
+
+    @Test("a free subscription is taken at once; a busy one is handed on in arrival order")
+    func handOver() {
+        var queue = TransactionQueue<String>()
+        let first = queue.enter(a, token: queue.nextToken(), waker: "first")
+        let onB = queue.enter(b, token: queue.nextToken(), waker: "on b")
+        let second = queue.enter(a, token: queue.nextToken(), waker: "second")
+        let third = queue.enter(a, token: queue.nextToken(), waker: "third")
+        #expect(first && onB && !second && !third)
+        #expect(queue.leave(a) == "second")
+        // Still busy: handed over, not freed, so a newcomer queues behind the third.
+        let newcomer = queue.enter(a, token: queue.nextToken(), waker: "newcomer")
+        #expect(!newcomer)
+        #expect(queue.leave(a) == "third")
+        #expect(queue.leave(a) == "newcomer")
+        #expect(queue.leave(a) == nil)
+        let again = queue.enter(a, token: queue.nextToken(), waker: "again")
+        #expect(again)
+    }
+
+    @Test("a waiter that gives up is withdrawn once, and not if it was already handed the subscription")
+    func withdraw() {
+        var queue = TransactionQueue<String>()
+        _ = queue.enter(a, token: queue.nextToken(), waker: "holder")
+        let waiting = queue.nextToken()
+        _ = queue.enter(a, token: waiting, waker: "waiting")
+        let handed = queue.nextToken()
+        _ = queue.enter(a, token: handed, waker: "handed")
+        #expect(queue.withdraw(waiting) == "waiting")
+        #expect(queue.withdraw(waiting) == nil)
+        #expect(queue.leave(a) == "handed")
+        #expect(queue.withdraw(handed) == nil)
+        #expect(queue.takeAll().isEmpty)
     }
 }
