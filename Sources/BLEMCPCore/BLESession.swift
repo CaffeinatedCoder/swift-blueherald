@@ -198,17 +198,19 @@ public actor BLESession {
     }
 
     private func waitForScanEnd(_ id: ScanID) async {
-        await withTaskCancellationHandler {
-            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                guard scans[id]?.isActive == true, !Task.isCancelled else {
-                    continuation.resume()
-                    return
+        // Isolation passed explicitly, as in `waitForNotification`.
+        await withTaskCancellationHandler(
+            operation: {
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    guard scans[id]?.isActive == true, !Task.isCancelled else {
+                        continuation.resume()
+                        return
+                    }
+                    scans[id]?.completionWaiters.append(continuation)
                 }
-                scans[id]?.completionWaiters.append(continuation)
-            }
-        } onCancel: {
-            Task { await self.finishScan(id) }
-        }
+            },
+            onCancel: { Task { await self.finishScan(id) } },
+            isolation: self)
     }
 
     private func ensureScanCapacity() throws(BLEError) {
@@ -658,17 +660,22 @@ public actor BLESession {
         }
         defer { timer.cancel() }
 
-        await withTaskCancellationHandler {
-            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                guard !Task.isCancelled else {
-                    continuation.resume()
-                    return
+        // Isolation passed explicitly: given an actor-isolated operation, the
+        // `nonisolated(nonsending)` overload can compile under -O without the hop back to this
+        // actor once the continuation resumes, and `drain` would then run off the actor
+        // (swiftlang/swift#92915). Inlining hides that here today; this keeps it from depending on it.
+        await withTaskCancellationHandler(
+            operation: {
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    guard !Task.isCancelled else {
+                        continuation.resume()
+                        return
+                    }
+                    waiters.append(NotificationWaiter(token: token, subscription: id, continuation: continuation))
                 }
-                waiters.append(NotificationWaiter(token: token, subscription: id, continuation: continuation))
-            }
-        } onCancel: {
-            Task { await self.resumeWaiter(token) }
-        }
+            },
+            onCancel: { Task { await self.resumeWaiter(token) } },
+            isolation: self)
     }
 
     private func resumeWaiter(_ token: UInt64) {

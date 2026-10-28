@@ -200,7 +200,9 @@ public actor CoreBluetoothCentral: BLECentral {
     /// The isolation is passed explicitly on purpose. Given this actor-isolated operation, the
     /// `nonisolated(nonsending)` overload of `withTaskCancellationHandler` compiles under -O
     /// (Swift 6.4) without the hop back to the actor after the continuation resumes: the caller
-    /// then carries on on the global executor, which aborted the first discovery in release builds.
+    /// then carries on on the global executor, which aborted the first discovery in release builds
+    /// (swiftlang/swift#92915, fix pending in swiftlang/swift#93356). The isolation overload is not
+    /// deprecated, so this can stay once the fix ships.
     private func perform(
         _ key: OperationKey,
         on peripheral: PeripheralID?,
