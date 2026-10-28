@@ -87,6 +87,53 @@ struct BLESessionTests {
         #expect(battery.address.service == Fixtures.batteryService)
     }
 
+    // MARK: User descriptions
+
+    func descriptions(_ services: [GATTService]?) -> [BLEUUID: String] {
+        Dictionary(
+            uniqueKeysWithValues: (services ?? []).flatMap(\.characteristics).compactMap { characteristic in
+                characteristic.userDescription.map { (characteristic.uuid, $0) }
+            })
+    }
+
+    @Test("connecting reads the 0x2901 names, trimmed")
+    func userDescriptionsOnConnect() async throws {
+        let session = await makeSession()
+        let connection = try await session.connect(meter.id)
+        #expect(
+            descriptions(connection.services) == [
+                Fixtures.batteryLevel: "Battery", Fixtures.uartRX: "Data In", Fixtures.uartTX: "Data Out",
+            ])
+        #expect(await central.descriptorReads == 3)
+    }
+
+    @Test("names can be skipped, and fetched later without rediscovery")
+    func userDescriptionsLater() async throws {
+        let session = await makeSession()
+        let connection = try await session.connect(meter.id, userDescriptions: false)
+        #expect(descriptions(connection.services).isEmpty)
+        #expect(await central.descriptorReads == 0)
+
+        // A read discovers nothing new and still reads no names.
+        _ = try await session.read(selector(Fixtures.batteryLevel))
+        #expect(await central.descriptorReads == 0)
+
+        let services = try await session.discoverServices(of: meter.id)
+        #expect(descriptions(services).count == 3)
+        _ = try await session.discoverServices(of: meter.id)
+        #expect(await central.descriptorReads == 3, "names are cached with the attribute table")
+    }
+
+    @Test("names that cannot be read are left out without failing discovery")
+    func userDescriptionsBestEffort() async throws {
+        await central.setDescriptorReadBehavior(.hang)
+        let session = await makeSession(SessionConfiguration(timeouts: SessionTimeouts(operation: .milliseconds(50))))
+        let connection = try await session.connect(meter.id)
+        #expect(connection.services?.count == 3)
+        #expect(connection.discoveryError == nil)
+        #expect(descriptions(connection.services).isEmpty)
+    }
+
     @Test("reading a characteristic without the read property explains why")
     func readNeedsProperty() async throws {
         let session = await makeSession()
@@ -166,6 +213,25 @@ struct BLESessionTests {
             try await session.write(Data([1]), to: selector(Fixtures.batteryLevel))
         }
         #expect(await central.writes.map(\.value) == [Data([0x01, 0x02])])
+    }
+
+    @Test("a frame allowlist admits exactly its frames and nothing reaches the radio otherwise")
+    func frameAllowlist() async throws {
+        let poll = Data([0xAB, 0xCD, 0x03, 0x5E, 0x01, 0xD9])
+        let clearLog = Data([0xAB, 0xCD, 0x03, 0x63, 0x01, 0xDE])
+        let session = await makeSession(
+            SessionConfiguration(writePolicy: WritePolicy(isEnabled: true, allowedValues: [Fixtures.uartRX: [poll]])))
+        _ = try await session.connect(meter.id)
+
+        _ = try await session.write(poll, to: selector(Fixtures.uartRX))
+        await #expect(throws: BLEError.writeValueNotAllowed(Fixtures.uartRX, value: clearLog, allowed: [poll])) {
+            try await session.write(clearLog, to: selector(Fixtures.uartRX))
+        }
+        // A value allowlist alone locks every other characteristic.
+        await #expect(throws: BLEError.writeNotAllowed(Fixtures.batteryLevel)) {
+            try await session.write(Data([1]), to: selector(Fixtures.batteryLevel))
+        }
+        #expect(await central.writes.map(\.value) == [poll])
     }
 
     @Test("writes larger than the negotiated MTU allows are refused")
@@ -249,6 +315,19 @@ struct BLESessionTests {
         let subscription = try await session.subscribe(selector(Fixtures.uartTX))
         let batch = try await session.notifications(from: subscription.id, maxCount: 10, waitUpTo: .milliseconds(50))
         #expect(batch.notifications.isEmpty)
+        #expect(!batch.waitSkipped)
+    }
+
+    @Test("a wait with no open subscription returns at once and says why")
+    func waitSkipped() async throws {
+        let session = await makeSession()
+        let clock = ContinuousClock()
+        let start = clock.now
+        let batch = try await session.notifications(maxCount: 10, waitUpTo: .seconds(30))
+        #expect(clock.now - start < .seconds(5))
+        #expect(batch.waitSkipped)
+        // Without a requested wait there is nothing to explain.
+        #expect(try await session.notifications(maxCount: 10).waitSkipped == false)
     }
 
     @Test("a lost link closes subscriptions but keeps their buffered values")
@@ -290,6 +369,39 @@ struct BLESessionTests {
         let final = try await session.unsubscribe(subscription.id)
         #expect(final.state == .closed(reason: "unsubscribed"))
         #expect(await central.notifying.isEmpty)
+    }
+
+    @Test("disconnecting reports whether there was a link, and needs none")
+    func disconnectWithoutLink() async throws {
+        let session = await makeSession()
+        #expect(await session.disconnect(meter.id) == false)
+        #expect(await central.disconnectRequests.isEmpty)
+        _ = try await session.connect(meter.id)
+        #expect(await session.disconnect(meter.id))
+        #expect(await session.disconnect(meter.id) == false)
+        #expect(await central.disconnectRequests == [meter.id])
+    }
+
+    // MARK: Adapter
+
+    @Test("status waits for a backend that has not reported the adapter state yet")
+    func statusSettles() async {
+        let central = FakeCentral(state: .unknown)
+        let session = BLESession(central: central)
+        let report = Task {
+            try await Task.sleep(for: .milliseconds(50))
+            await central.changeState(to: .poweredOn)
+        }
+        #expect(await session.status().adapterState == .poweredOn)
+        _ = await report.result
+    }
+
+    @Test("status gives up on an adapter that stays silent")
+    func statusStaysUnknown() async {
+        let central = FakeCentral(state: .unknown)
+        let timeouts = SessionTimeouts(poweredOn: .milliseconds(50))
+        let session = BLESession(central: central, configuration: SessionConfiguration(timeouts: timeouts))
+        #expect(await session.status().adapterState == .unknown)
     }
 
     @Test("the adapter powering off drops every connection")

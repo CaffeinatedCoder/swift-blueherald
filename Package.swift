@@ -8,7 +8,8 @@ import PackageDescription
 //   ble-mcp              composition root: reads the environment, wires the backend and serves over stdio
 //
 // Every module carries the BLEMCP prefix so this package can be linked next to device libraries
-// (BLEProtocolKit, BLECoreBluetooth, ...) without module name clashes.
+// such as swift-dragoman (DragomanCore, DragomanCoreBluetooth, DragomanTesting, ...) without
+// module name clashes.
 
 let strictSettings: [SwiftSetting] = [
     .swiftLanguageMode(.v6),

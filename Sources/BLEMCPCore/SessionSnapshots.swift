@@ -82,6 +82,9 @@ public struct NotificationBatch: Sendable {
     public let dropped: Int
     /// The state of each subscription read, after the read.
     public let subscriptions: [SubscriptionSnapshot]
+    /// A wait was requested and nothing was buffered, but no open subscription could deliver
+    /// anything, so the call returned straight away.
+    public let waitSkipped: Bool
 }
 
 public struct CharacteristicValue: Sendable {
@@ -107,6 +110,8 @@ public struct WriteReceipt: Sendable {
 }
 
 public struct SessionStatus: Sendable {
+    public let startedAt: Date
+    public let captureDestination: String?
     public let adapterState: CentralState
     public let configuration: SessionConfiguration
     public let activeScans: [ScanID]

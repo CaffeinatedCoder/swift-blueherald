@@ -48,7 +48,15 @@ enum BLEMCPCommand {
         let logger = Logger(label: BLEMCPServer.name)
 
         #if canImport(CoreBluetooth)
-        let session = BLESession(central: CoreBluetoothCentral(), configuration: configuration.session)
+        let capture: JSONLCaptureFile?
+        do {
+            capture = try configuration.capturePath.map { (path: String) throws(CaptureFileError) in
+                try JSONLCaptureFile(path: path, logger: logger)
+            }
+        } catch {
+            fail(error.description, status: EX_CANTCREAT)
+        }
+        let session = BLESession(central: CoreBluetoothCentral(), configuration: configuration.session, capture: capture)
         let server = BLEMCPServer(session: session, logger: logger)
 
         // On SIGINT/SIGTERM, release scans and links before exiting; the controller would
@@ -59,6 +67,7 @@ enum BLEMCPCommand {
             source.setEventHandler {
                 Task {
                     await session.shutdown()
+                    capture?.flush()
                     exit(EXIT_SUCCESS)
                 }
             }
@@ -71,14 +80,18 @@ enum BLEMCPCommand {
             metadata: [
                 "version": "\(BLEMCPServer.version)",
                 "writes": "\(configuration.session.writePolicy.isEnabled)",
+                "capture": "\(capture?.destination ?? "off")",
             ])
         do {
             try await server.run(on: StdioServerTransport(logger: logger))
         } catch {
             logger.critical("server failed", metadata: ["error": "\(error)"])
             await session.shutdown()
+            capture?.flush()
             exit(EXIT_FAILURE)
         }
+        // `run` has shut the session down; its last capture rows may still be queued.
+        capture?.flush()
         withExtendedLifetime(signalSources) {}
         #else
         fail("ble-mcp needs CoreBluetooth; no Bluetooth backend exists for this platform yet.", status: EXIT_FAILURE)

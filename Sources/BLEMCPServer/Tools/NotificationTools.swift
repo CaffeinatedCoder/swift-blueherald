@@ -44,7 +44,8 @@ enum NotificationTools {
                 Returns buffered notifications, oldest first, and removes them from the buffer. Each has \
                 a session-wide sequence number and a receive timestamp. `dropped` counts values the \
                 buffer overwrote since the last read; read more often or with a larger max_count if it \
-                is not zero. Use wait_ms to block until data arrives instead of polling.
+                is not zero. Use wait_ms to block until data arrives instead of polling; without an \
+                open subscription there is nothing to wait for, and `note` says so.
                 """,
             arguments: [subscription, maxCount, wait],
             effect: .stateful

@@ -15,6 +15,8 @@ public actor FakeCentral: BLECentral {
         public var values: [BLEUUID: Data]
         /// Descriptor values by descriptor UUID.
         public var descriptorValues: [BLEUUID: Data]
+        /// 0x2901 values by characteristic UUID.
+        public var userDescriptions: [BLEUUID: String]
 
         public init(
             id: PeripheralID = PeripheralID(UUID()),
@@ -24,7 +26,8 @@ public actor FakeCentral: BLECentral {
             manufacturerData: Data? = nil,
             services: [GATTService] = [],
             values: [BLEUUID: Data] = [:],
-            descriptorValues: [BLEUUID: Data] = [:]
+            descriptorValues: [BLEUUID: Data] = [:],
+            userDescriptions: [BLEUUID: String] = [:]
         ) {
             self.id = id
             self.name = name
@@ -34,6 +37,7 @@ public actor FakeCentral: BLECentral {
             self.services = services
             self.values = values
             self.descriptorValues = descriptorValues
+            self.userDescriptions = userDescriptions
         }
     }
 
@@ -64,8 +68,11 @@ public actor FakeCentral: BLECentral {
     public private(set) var writes: [Write] = []
     public private(set) var disconnectRequests: [PeripheralID] = []
     public private(set) var connectAttempts = 0
+    public private(set) var descriptorReads = 0
     private var connectBehavior = Behavior.succeed
     private var readBehavior = Behavior.succeed
+    private var writeBehavior = Behavior.succeed
+    private var descriptorReadBehavior = Behavior.succeed
     private var maximumWriteLengths: (withResponse: Int, withoutResponse: Int) = (512, 20)
 
     public init(state: CentralState = .poweredOn, devices: [Device] = []) {
@@ -86,6 +93,14 @@ public actor FakeCentral: BLECentral {
 
     public func setReadBehavior(_ behavior: Behavior) {
         readBehavior = behavior
+    }
+
+    public func setWriteBehavior(_ behavior: Behavior) {
+        writeBehavior = behavior
+    }
+
+    public func setDescriptorReadBehavior(_ behavior: Behavior) {
+        descriptorReadBehavior = behavior
     }
 
     public func setMaximumWriteLengths(withResponse: Int, withoutResponse: Int) {
@@ -139,11 +154,15 @@ public actor FakeCentral: BLECentral {
     }
 
     public func waitUntilPoweredOn() async throws(BLEError) {
-        switch adapterState {
-        case .poweredOn: return
-        case .unknown, .resetting: try await hang()
-        default: throw .bluetoothUnavailable(adapterState)
+        // Polls, so that `changeState(to:)` releases waiters the way CoreBluetooth's state callback does.
+        while adapterState == .unknown || adapterState == .resetting {
+            do {
+                try await Task.sleep(for: .milliseconds(5))
+            } catch {
+                throw .cancelled
+            }
         }
+        guard adapterState == .poweredOn else { throw .bluetoothUnavailable(adapterState) }
     }
 
     public func scan() throws(BLEError) -> AsyncStream<Advertisement> {
@@ -182,14 +201,23 @@ public actor FakeCentral: BLECentral {
         return try device(address.peripheral).values[address.characteristic] ?? Data()
     }
 
-    public func write(_ value: Data, to address: CharacteristicAddress, mode: WriteMode) throws(BLEError) {
+    public func write(_ value: Data, to address: CharacteristicAddress, mode: WriteMode) async throws(BLEError) {
+        try await behave(writeBehavior)
         _ = try device(address.peripheral)
         devices[address.peripheral]?.values[address.characteristic] = value
         writes.append(Write(address: address, descriptor: nil, value: value, mode: mode))
     }
 
-    public func read(_ address: DescriptorAddress) throws(BLEError) -> Data {
-        try device(address.characteristic.peripheral).descriptorValues[address.descriptor] ?? Data()
+    public func read(_ address: DescriptorAddress) async throws(BLEError) -> Data {
+        descriptorReads += 1
+        try await behave(descriptorReadBehavior)
+        let device = try device(address.characteristic.peripheral)
+        if address.descriptor == GATTDescriptor.characteristicUserDescription,
+            let text = device.userDescriptions[address.characteristic.characteristic]
+        {
+            return Data(text.utf8)
+        }
+        return device.descriptorValues[address.descriptor] ?? Data()
     }
 
     public func write(_ value: Data, to address: DescriptorAddress) throws(BLEError) {

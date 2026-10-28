@@ -1,3 +1,5 @@
+public import Foundation
+
 /// Every failure the session can report. Each case maps to a stable snake_case `code`, a
 /// `message` and, where there is an obvious next step, a `hint` an agent can act on.
 public enum BLEError: Error, Hashable, Sendable {
@@ -17,6 +19,8 @@ public enum BLEError: Error, Hashable, Sendable {
     case propertyNotSupported(characteristic: BLEUUID, required: String, available: [String])
     case writesDisabled
     case writeNotAllowed(BLEUUID)
+    case writeDenied(BLEUUID)
+    case writeValueNotAllowed(BLEUUID, value: Data, allowed: [Data])
     case reservedDescriptor(BLEUUID)
     case payloadTooLarge(size: Int, maximum: Int)
     case subscriptionNotFound(SubscriptionID)
@@ -46,6 +50,8 @@ extension BLEError {
         case .propertyNotSupported: "property_not_supported"
         case .writesDisabled: "writes_disabled"
         case .writeNotAllowed: "write_not_allowed"
+        case .writeDenied: "write_denied"
+        case .writeValueNotAllowed: "write_value_not_allowed"
         case .reservedDescriptor: "reserved_descriptor"
         case .payloadTooLarge: "payload_too_large"
         case .subscriptionNotFound: "subscription_not_found"
@@ -91,6 +97,10 @@ extension BLEError {
             "Writes are disabled on this server."
         case .writeNotAllowed(let uuid):
             "Characteristic \(uuid) is not on the write allowlist."
+        case .writeDenied(let uuid):
+            "Characteristic \(uuid) is on the write denylist and is never written."
+        case .writeValueNotAllowed(let uuid, let value, let allowed):
+            "The value \(Hex.encode(value)) is not allowed for characteristic \(uuid). Allowed frames: \(allowed.map { Hex.encode($0) }.joined(separator: ", "))."
         case .reservedDescriptor(let uuid):
             "Descriptor \(uuid) is managed by the Bluetooth stack and cannot be written directly."
         case .payloadTooLarge(let size, let maximum):
@@ -122,7 +132,9 @@ extension BLEError {
             "This Mac has no Bluetooth LE controller."
         case .unknownPeripheral:
             "Run ble_scan first; peripheral ids are only resolvable after the host has seen the device."
-        case .notConnected, .disconnected:
+        case .notConnected:
+            "Call ble_connect first. Connections do not survive a server restart; ble_status shows when this server started."
+        case .disconnected:
             "Call ble_connect again."
         case .connectionLimitReached:
             "Disconnect an idle peripheral with ble_disconnect, or raise BLE_MCP_MAX_CONNECTIONS."
@@ -133,7 +145,11 @@ extension BLEError {
         case .writesDisabled:
             "Restart the server with BLE_MCP_ALLOW_WRITES=1 to enable writes."
         case .writeNotAllowed:
-            "Add the characteristic UUID to BLE_MCP_WRITE_ALLOWLIST."
+            "Add the characteristic UUID to BLE_MCP_WRITE_ALLOWLIST, or its exact frames to BLE_MCP_WRITE_VALUE_ALLOWLIST."
+        case .writeDenied:
+            "Remove the characteristic from BLE_MCP_WRITE_DENYLIST if writing it is really intended."
+        case .writeValueNotAllowed:
+            "Only frames listed in BLE_MCP_WRITE_VALUE_ALLOWLIST can be written to this characteristic."
         case .reservedDescriptor:
             "Use ble_subscribe and ble_unsubscribe to change notification state."
         case .subscriptionLimitReached:

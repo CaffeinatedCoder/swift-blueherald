@@ -138,13 +138,17 @@ struct ScanStarted: Encodable {
 
 struct CharacteristicSummary: Encodable {
     let uuid: String
+    /// The Bluetooth SIG name, for assigned UUIDs.
     let name: String?
+    /// The device's own name, from its 0x2901 descriptor.
+    let description: String?
     let properties: [String]
     let descriptors: [UUIDReference]
 
     init(_ characteristic: GATTCharacteristic) {
         uuid = characteristic.uuid.description
         name = AssignedNumbers.name(for: characteristic.uuid)
+        description = characteristic.userDescription
         properties = characteristic.properties.names
         descriptors = characteristic.descriptors.map { UUIDReference($0.uuid) }
     }
@@ -196,6 +200,7 @@ struct ConnectionReport: Encodable {
 struct DisconnectReport: Encodable {
     let peripheralId: String
     let disconnected: Bool
+    let wasConnected: Bool
 }
 
 struct ServicesReport: Encodable {
@@ -313,12 +318,17 @@ struct NotificationsReport: Encodable {
     let remaining: Int
     let dropped: Int
     let subscriptions: [SubscriptionReport]
+    let note: String?
 
     init(_ batch: NotificationBatch) {
         notifications = batch.notifications.map(NotificationEntry.init)
         remaining = batch.remaining
         dropped = batch.dropped
         subscriptions = batch.subscriptions.map(SubscriptionReport.init)
+        note =
+            batch.waitSkipped
+            ? "Returned without waiting: no open subscription can deliver notifications. Call ble_subscribe first."
+            : nil
     }
 }
 
@@ -331,11 +341,32 @@ struct StatusReport: Encodable {
     struct Server: Encodable {
         let name: String
         let version: String
+        /// Connections and subscriptions do not survive a restart; this tells an agent one happened.
+        let startedAt: Date
     }
 
     struct Policy: Encodable {
+        struct Frames: Encodable {
+            let characteristic: String
+            let frames: [String]
+        }
+
         let writesEnabled: Bool
         let writeAllowlist: [String]?
+        let writeValueAllowlist: [Frames]?
+        let writeDenylist: [String]?
+
+        init(_ policy: WritePolicy) {
+            writesEnabled = policy.isEnabled
+            writeAllowlist = policy.allowlist.isEmpty ? nil : policy.allowlist.sorted().map(\.description)
+            writeValueAllowlist =
+                policy.allowedValues.isEmpty
+                ? nil
+                : policy.allowedValues.sorted { $0.key < $1.key }.map { characteristic, frames in
+                    Frames(characteristic: characteristic.description, frames: frames.map { Hex.encode($0) }.sorted())
+                }
+            writeDenylist = policy.denylist.isEmpty ? nil : policy.denylist.sorted().map(\.description)
+        }
     }
 
     struct Limits: Encodable {
@@ -346,6 +377,8 @@ struct StatusReport: Encodable {
     }
 
     let server: Server
+    /// The JSONL capture file, when the server records one.
+    let capturePath: String?
     let adapterState: String
     let hint: String?
     let policy: Policy
@@ -356,13 +389,11 @@ struct StatusReport: Encodable {
 
     init(_ status: SessionStatus) {
         let configuration = status.configuration
-        server = Server(name: BLEMCPServer.name, version: BLEMCPServer.version)
+        server = Server(name: BLEMCPServer.name, version: BLEMCPServer.version, startedAt: status.startedAt)
+        capturePath = status.captureDestination
         adapterState = status.adapterState.rawValue
         hint = status.adapterState == .poweredOn ? nil : BLEError.bluetoothUnavailable(status.adapterState).hint
-        policy = Policy(
-            writesEnabled: configuration.writePolicy.isEnabled,
-            writeAllowlist: configuration.writePolicy.allowlist.isEmpty
-                ? nil : configuration.writePolicy.allowlist.sorted().map(\.description))
+        policy = Policy(configuration.writePolicy)
         limits = Limits(
             maxConnections: configuration.limits.maxConnections,
             maxSubscriptions: configuration.limits.maxSubscriptions,

@@ -47,17 +47,36 @@ public struct GATTDescriptor: Hashable, Sendable {
     /// Client Characteristic Configuration. CoreBluetooth owns it: writing it directly raises an
     /// Objective-C exception, so subscriptions go through `setNotifyValue` instead.
     public static let clientCharacteristicConfiguration = BLEUUID(0x2902)
+
+    /// Characteristic User Description: the device's own name for a characteristic.
+    public static let characteristicUserDescription = BLEUUID(0x2901)
 }
 
 public struct GATTCharacteristic: Hashable, Sendable {
     public let uuid: BLEUUID
     public let properties: CharacteristicProperties
     public let descriptors: [GATTDescriptor]
+    /// The value of its 0x2901 descriptor, when discovery read it.
+    public let userDescription: String?
 
-    public init(uuid: BLEUUID, properties: CharacteristicProperties, descriptors: [GATTDescriptor] = []) {
+    public init(
+        uuid: BLEUUID,
+        properties: CharacteristicProperties,
+        descriptors: [GATTDescriptor] = [],
+        userDescription: String? = nil
+    ) {
         self.uuid = uuid
         self.properties = properties
         self.descriptors = descriptors
+        self.userDescription = userDescription
+    }
+
+    public var hasUserDescription: Bool {
+        descriptors.contains { $0.uuid == GATTDescriptor.characteristicUserDescription }
+    }
+
+    public func with(userDescription: String?) -> GATTCharacteristic {
+        GATTCharacteristic(uuid: uuid, properties: properties, descriptors: descriptors, userDescription: userDescription)
     }
 }
 

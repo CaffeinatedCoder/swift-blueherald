@@ -54,6 +54,8 @@ public enum ToolEffect: Sendable {
 public struct ToolDefinition: Sendable {
     public let tool: Tool
     public let effect: ToolEffect
+    /// Only offered when the session records a capture.
+    public let requiresCapture: Bool
     private let arguments: [any ArgumentDeclaration]
     private let handler: @Sendable (ToolArguments, BLESession) async throws -> any Encodable & Sendable
 
@@ -64,6 +66,7 @@ public struct ToolDefinition: Sendable {
         arguments: [any ArgumentDeclaration] = [],
         effect: ToolEffect,
         idempotent: Bool = false,
+        requiresCapture: Bool = false,
         run: @escaping @Sendable (ToolArguments, BLESession) async throws -> Output
     ) {
         let properties = Dictionary(uniqueKeysWithValues: arguments.map { ($0.name, $0.propertySchema) })
@@ -88,6 +91,7 @@ public struct ToolDefinition: Sendable {
                 idempotentHint: idempotent,
                 openWorldHint: true))
         self.effect = effect
+        self.requiresCapture = requiresCapture
         self.arguments = arguments
         self.handler = { arguments, session in try await run(arguments, session) }
     }
@@ -153,13 +157,16 @@ enum ToolResult {
     }()
 }
 
-/// The immutable set of tools one server exposes, after applying the write policy.
+/// The immutable set of tools one server exposes, after applying the write policy and leaving
+/// out capture tools when nothing is being captured.
 public struct ToolCatalog: Sendable {
     public let definitions: [ToolDefinition]
     private let index: [String: ToolDefinition]
 
-    public init(_ definitions: [ToolDefinition], writePolicy: WritePolicy) {
-        let visible = definitions.filter { $0.effect != .writesToDevice || writePolicy.isEnabled }
+    public init(_ definitions: [ToolDefinition], writePolicy: WritePolicy, capturing: Bool = false) {
+        let visible = definitions.filter {
+            ($0.effect != .writesToDevice || writePolicy.isEnabled) && (!$0.requiresCapture || capturing)
+        }
         self.definitions = visible
         self.index = Dictionary(visible.map { ($0.name, $0) }) { first, _ in first }
     }

@@ -11,9 +11,12 @@ import Testing
 struct EndToEndTests {
     let meter = Fixtures.meter()
 
-    func connectedClient(writes: WritePolicy = .readOnly) async throws -> (Client, FakeCentral) {
+    func connectedClient(
+        writes: WritePolicy = .readOnly,
+        capture: (any CaptureSink)? = nil
+    ) async throws -> (Client, FakeCentral) {
         let central = FakeCentral(devices: [meter, Fixtures.beacon()])
-        let session = BLESession(central: central, configuration: SessionConfiguration(writePolicy: writes))
+        let session = BLESession(central: central, configuration: SessionConfiguration(writePolicy: writes), capture: capture)
         await session.start()
         let server = await BLEMCPServer(session: session).makeServer()
         let (clientTransport, serverTransport) = await InMemoryTransport.createConnectedPair()
@@ -57,6 +60,28 @@ struct EndToEndTests {
         #expect(json["adapter_state"] as? String == "powered_on")
         let policy = try #require(json["policy"] as? [String: Any])
         #expect(policy["writes_enabled"] as? Bool == false)
+        let server = try #require(json["server"] as? [String: Any])
+        #expect(server["started_at"] is String)
+    }
+
+    @Test("disconnecting without a link and waiting without a subscription explain themselves")
+    func emptyHanded() async throws {
+        let (client, _) = try await connectedClient()
+        let (disconnect, disconnectError) = try await call(
+            client, "ble_disconnect", ["peripheral_id": .string(meter.id.description)])
+        #expect(!disconnectError)
+        #expect(disconnect["was_connected"] as? Bool == false)
+
+        let (batch, batchError) = try await call(client, "ble_notifications", ["wait_ms": 10_000])
+        #expect(!batchError)
+        let note = try #require(batch["note"] as? String)
+        #expect(note.contains("ble_subscribe"))
+
+        let (read, _) = try await call(
+            client, "ble_read", ["peripheral_id": .string(meter.id.description), "characteristic_uuid": "2a19"])
+        let error = try #require(read["error"] as? [String: Any])
+        #expect(error["code"] as? String == "not_connected")
+        #expect((error["hint"] as? String)?.contains("restart") == true)
     }
 
     @Test("scan, connect and read a value through MCP")
@@ -75,6 +100,8 @@ struct EndToEndTests {
         #expect(!connectError)
         let services = try #require(connection["services"] as? [[String: Any]])
         #expect(services.compactMap { $0["name"] as? String } == ["Device Information", "Battery", "Nordic UART Service"])
+        let uart = try #require(services.last?["characteristics"] as? [[String: Any]])
+        #expect(uart.compactMap { $0["description"] as? String } == ["Data In", "Data Out"])
 
         let (battery, _) = try await call(
             client, "ble_read", ["peripheral_id": .string(peripheralID), "characteristic_uuid": "2a19"])
@@ -113,6 +140,30 @@ struct EndToEndTests {
         await #expect(throws: MCPError.self) {
             _ = try await client.callTool(name: "ble_write", arguments: [:])
         }
+    }
+
+    @Test("the capture tool is offered only while capturing, and guards the format's own keys")
+    func captureMark() async throws {
+        let (plain, _) = try await connectedClient()
+        #expect(!(try await plain.listTools().tools.map(\.name).contains("ble_capture_mark")))
+
+        let capture = RecordingCapture()
+        let (client, _) = try await connectedClient(capture: capture)
+        #expect(try await client.listTools().tools.map(\.name).contains("ble_capture_mark"))
+        let (status, _) = try await call(client, "ble_status")
+        #expect(status["capture_path"] as? String == "memory")
+
+        let (refused, refusedError) = try await call(
+            client, "ble_capture_mark", ["note": "step", "fields": ["dir": "tx", "select": "G"]])
+        #expect(refusedError)
+        let error = try #require(refused["error"] as? [String: Any])
+        #expect(error["message"] as? String == "Field 'dir' is reserved by the capture format; pick another name.")
+
+        let (marked, markError) = try await call(
+            client, "ble_capture_mark", ["note": "select AC V", "fields": ["select": "G", "expect_mode": 1, "skip": .null]])
+        #expect(!markError)
+        #expect(marked["marked"] as? Bool == true)
+        #expect(capture.kinds == [.marker(note: "select AC V", fields: ["select": .string("G"), "expect_mode": .integer(1)])])
     }
 
     @Test("writes, subscriptions and notifications through MCP")

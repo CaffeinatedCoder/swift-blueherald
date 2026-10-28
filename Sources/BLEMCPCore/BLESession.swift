@@ -9,10 +9,13 @@ public import Foundation
 /// concurrent calls cannot overshoot a limit.
 public actor BLESession {
     public nonisolated let configuration: SessionConfiguration
+    /// When this session, and so this server process, started. Connections do not outlive it.
+    public nonisolated let startedAt = Date.now
     /// Disconnections and adapter changes, for forwarding to the client. Single consumer.
     public nonisolated let events: AsyncStream<SessionEvent>
 
     private let central: any BLECentral
+    private let captureSink: (any CaptureSink)?
     private let eventSink: AsyncStream<SessionEvent>.Continuation
     private var eventPump: Task<Void, Never>?
     private var isShutDown = false
@@ -31,11 +34,20 @@ public actor BLESession {
     private var lastWaiterToken: UInt64 = 0
 
     private static let knownNameCapacity = 4096
+    /// How long `status()` gives a backend that has only just started to report the adapter state.
+    /// CoreBluetooth reports it shortly after its manager is created, which happens on first use.
+    private static let stateSettleTime = Duration.seconds(2)
     private static let finishedScanCapacity = 8
 
-    public init(central: some BLECentral, configuration: SessionConfiguration = SessionConfiguration()) {
+    /// - Parameter capture: Receives every write, notification, read and link change, in order.
+    public init(
+        central: some BLECentral,
+        configuration: SessionConfiguration = SessionConfiguration(),
+        capture: (any CaptureSink)? = nil
+    ) {
         self.central = central
         self.configuration = configuration
+        self.captureSink = capture
         let (events, eventSink) = AsyncStream.makeStream(of: SessionEvent.self, bufferingPolicy: .bufferingNewest(256))
         self.events = events
         self.eventSink = eventSink
@@ -64,6 +76,9 @@ public actor BLESession {
         let peripherals = Array(connections.keys)
         for id in peripherals {
             closeSubscriptions(of: id, reason: "server shutting down")
+            if connections[id]?.state == .connected {
+                capture(.disconnected(id, reason: "server shutting down"))
+            }
         }
         connections.removeAll()
         let pending = waiters
@@ -84,8 +99,18 @@ public actor BLESession {
     // MARK: - Status
 
     public func status() async -> SessionStatus {
-        let state = await central.state()
+        var state = await central.state()
+        if state == .unknown {
+            let central = central
+            let limit = min(configuration.timeouts.poweredOn, Self.stateSettleTime)
+            _ = try? await withDeadline(limit, operation: "Waiting for the adapter state") {
+                try await central.waitUntilPoweredOn()
+            }
+            state = await central.state()
+        }
         return SessionStatus(
+            startedAt: startedAt,
+            captureDestination: captureDestination,
             adapterState: state,
             configuration: configuration,
             activeScans: scans.values.filter(\.isActive).map(\.id).sorted(),
@@ -200,11 +225,18 @@ public actor BLESession {
 
     // MARK: - Connections
 
-    public func connect(_ id: PeripheralID, discover: Bool = true) async throws(BLEError) -> ConnectionSnapshot {
+    /// - Parameters:
+    ///   - discover: Also discover the attribute table.
+    ///   - userDescriptions: With `discover`, also read each characteristic's 0x2901 name.
+    public func connect(
+        _ id: PeripheralID,
+        discover: Bool = true,
+        userDescriptions: Bool = true
+    ) async throws(BLEError) -> ConnectionSnapshot {
         if let existing = connections[id] {
             guard existing.state == .connected else { throw .alreadyConnecting(id) }
-            if discover, existing.services == nil {
-                _ = try? await discoverServices(of: id)
+            if discover, existing.services == nil || (userDescriptions && !existing.hasUserDescriptions) {
+                _ = try? await discoverServices(of: id, userDescriptions: userDescriptions)
             }
             return try await connectionSnapshot(id)
         }
@@ -232,16 +264,22 @@ public actor BLESession {
             throw .disconnected(id, reason: "the connection was closed while it was being established")
         }
         connections[id]?.markConnected(name: peripheral.name ?? knownNames[id])
+        capture(.connected(id, name: connections[id]?.name))
         if discover {
-            _ = try? await discoverServices(of: id)
+            _ = try? await discoverServices(of: id, userDescriptions: userDescriptions)
         }
         return try await connectionSnapshot(id)
     }
 
-    public func disconnect(_ id: PeripheralID) async throws(BLEError) {
-        guard connections.removeValue(forKey: id) != nil else { throw .notConnected(id) }
+    /// Disconnects `id` and closes its subscriptions. A peripheral that is not connected is
+    /// already where this leaves it, so that is not an error. Returns whether there was a link.
+    @discardableResult
+    public func disconnect(_ id: PeripheralID) async -> Bool {
+        guard connections.removeValue(forKey: id) != nil else { return false }
         closeSubscriptions(of: id, reason: "disconnected on request")
+        capture(.disconnected(id, reason: "disconnected on request"))
         await central.disconnect(id)
+        return true
     }
 
     public func connectionSnapshots() async -> [ConnectionSnapshot] {
@@ -290,10 +328,32 @@ public actor BLESession {
     // MARK: - GATT
 
     /// The peripheral's attribute table, discovered on first use and cached for the connection.
-    public func discoverServices(of id: PeripheralID, refresh: Bool = false) async throws(BLEError) -> [GATTService] {
+    ///
+    /// With `userDescriptions`, each characteristic's 0x2901 descriptor is read too, so vendor
+    /// characteristics arrive with the device's own names. That part is best effort: a read that
+    /// fails or is slow leaves that name out instead of failing discovery.
+    public func discoverServices(
+        of id: PeripheralID,
+        refresh: Bool = false,
+        userDescriptions: Bool = true
+    ) async throws(BLEError) -> [GATTService] {
         let connection = try requireConnected(id)
-        if !refresh, let services = connection.services { return services }
+        var services: [GATTService]
+        if !refresh, let cached = connection.services {
+            services = cached
+        } else {
+            services = try await discoverAttributeTable(of: id)
+        }
+        if userDescriptions, connections[id]?.hasUserDescriptions == false {
+            services = await readingUserDescriptions(of: id, into: services)
+            guard connections[id]?.state == .connected else { throw .disconnected(id, reason: nil) }
+            connections[id]?.services = services
+            connections[id]?.hasUserDescriptions = true
+        }
+        return services
+    }
 
+    private func discoverAttributeTable(of id: PeripheralID) async throws(BLEError) -> [GATTService] {
         let central = central
         do throws(BLEError) {
             let services = try await withDeadline(
@@ -303,12 +363,49 @@ public actor BLESession {
             }
             guard connections[id]?.state == .connected else { throw .disconnected(id, reason: nil) }
             connections[id]?.services = services
+            connections[id]?.hasUserDescriptions = false
             connections[id]?.discoveryError = nil
             return services
         } catch {
             connections[id]?.discoveryError = error
             throw error
         }
+    }
+
+    /// Returns `services` with the 0x2901 names filled in. Each read gets at most two seconds and
+    /// all of them together ten, so a device that stalls cannot hold discovery hostage.
+    private func readingUserDescriptions(of id: PeripheralID, into services: [GATTService]) async -> [GATTService] {
+        let central = central
+        let perRead = min(configuration.timeouts.operation, .seconds(2))
+        let budgetEnds = ContinuousClock.now + .seconds(10)
+        var described: [GATTService] = []
+        described.reserveCapacity(services.count)
+        for service in services {
+            var characteristics: [GATTCharacteristic] = []
+            characteristics.reserveCapacity(service.characteristics.count)
+            for characteristic in service.characteristics {
+                guard characteristic.hasUserDescription, ContinuousClock.now < budgetEnds else {
+                    characteristics.append(characteristic)
+                    continue
+                }
+                let address = DescriptorAddress(
+                    characteristic: CharacteristicAddress(peripheral: id, service: service.uuid, characteristic: characteristic.uuid),
+                    descriptor: GATTDescriptor.characteristicUserDescription)
+                let value = try? await withDeadline(perRead, operation: "Reading the user description of \(characteristic.uuid)") {
+                    try await central.read(address)
+                }
+                characteristics.append(characteristic.with(userDescription: value.flatMap(Self.userDescriptionText)))
+            }
+            described.append(GATTService(uuid: service.uuid, isPrimary: service.isPrimary, characteristics: characteristics))
+        }
+        return described
+    }
+
+    /// 0x2901 holds UTF-8 text; devices often pad it with NULs or spaces.
+    private static func userDescriptionText(_ value: Data) -> String? {
+        let trimmed = value.reversed().drop { $0 == 0 }.reversed()
+        let text = String(validating: trimmed, as: UTF8.self)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text?.isEmpty == false ? text : nil
     }
 
     public func read(_ selector: CharacteristicSelector) async throws(BLEError) -> CharacteristicValue {
@@ -319,6 +416,7 @@ public actor BLESession {
         let value = try await withDeadline(configuration.timeouts.operation, operation: "Reading \(address.characteristic)") {
             try await central.read(address)
         }
+        capture(.read(address, value))
         return CharacteristicValue(
             address: address, properties: target.characteristic.properties, value: value, readAt: .now)
     }
@@ -330,12 +428,9 @@ public actor BLESession {
         to selector: CharacteristicSelector,
         mode requestedMode: WriteMode? = nil
     ) async throws(BLEError) -> WriteReceipt {
-        let policy = configuration.writePolicy
-        guard policy.isEnabled else { throw .writesDisabled }
+        // Policy first: a refused frame never causes discovery, let alone reaches the radio.
+        try configuration.writePolicy.checkWrite(value, to: selector.characteristic)
         let target = try await resolve(selector)
-        guard policy.permits(target.address.characteristic) else {
-            throw .writeNotAllowed(target.address.characteristic)
-        }
 
         let mode = requestedMode ?? (target.characteristic.properties.contains(.write) ? .withResponse : .withoutResponse)
         switch mode {
@@ -347,8 +442,14 @@ public actor BLESession {
         let address = target.address
         let maximum = try await central.maximumWriteLength(for: address.peripheral, mode: mode)
         guard value.count <= maximum else { throw .payloadTooLarge(size: value.count, maximum: maximum) }
-        try await withDeadline(configuration.timeouts.operation, operation: "Writing \(address.characteristic)") {
-            try await central.write(value, to: address, mode: mode)
+        capture(.write(address, value, mode))
+        do {
+            try await withDeadline(configuration.timeouts.operation, operation: "Writing \(address.characteristic)") {
+                try await central.write(value, to: address, mode: mode)
+            }
+        } catch {
+            capture(.writeFailed(address, descriptor: nil, error))
+            throw error
         }
         return WriteReceipt(address: address, descriptor: nil, byteCount: value.count, mode: mode)
     }
@@ -363,6 +464,7 @@ public actor BLESession {
         let value = try await withDeadline(configuration.timeouts.operation, operation: "Reading descriptor \(descriptor)") {
             try await central.read(address)
         }
+        capture(.descriptorRead(address, value))
         return DescriptorValue(address: address, value: value, readAt: .now)
     }
 
@@ -371,19 +473,21 @@ public actor BLESession {
         to descriptor: BLEUUID,
         of selector: CharacteristicSelector
     ) async throws(BLEError) -> WriteReceipt {
-        let policy = configuration.writePolicy
-        guard policy.isEnabled else { throw .writesDisabled }
+        try configuration.writePolicy.checkDescriptorWrite(on: selector.characteristic)
         guard descriptor != GATTDescriptor.clientCharacteristicConfiguration else {
             throw .reservedDescriptor(descriptor)
         }
         let target = try await resolve(selector)
-        guard policy.permits(target.address.characteristic) else {
-            throw .writeNotAllowed(target.address.characteristic)
-        }
         let address = try GATTResolver.resolve(descriptor: descriptor, of: target)
         let central = central
-        try await withDeadline(configuration.timeouts.operation, operation: "Writing descriptor \(descriptor)") {
-            try await central.write(value, to: address)
+        capture(.descriptorWrite(address, value))
+        do {
+            try await withDeadline(configuration.timeouts.operation, operation: "Writing descriptor \(descriptor)") {
+                try await central.write(value, to: address)
+            }
+        } catch {
+            capture(.writeFailed(target.address, descriptor: descriptor, error))
+            throw error
         }
         return WriteReceipt(address: target.address, descriptor: descriptor, byteCount: value.count, mode: nil)
     }
@@ -397,7 +501,8 @@ public actor BLESession {
     }
 
     private func resolve(_ selector: CharacteristicSelector) async throws(BLEError) -> ResolvedCharacteristic {
-        let services = try await discoverServices(of: selector.peripheral)
+        // Names are not needed to address a characteristic; skipping them keeps a first read fast.
+        let services = try await discoverServices(of: selector.peripheral, userDescriptions: false)
         return try GATTResolver.resolve(selector, in: services)
     }
 
@@ -461,6 +566,7 @@ public actor BLESession {
             throw .disconnected(address.peripheral, reason: "the peripheral disconnected while subscribing")
         }
         subscriptions[id]?.state = .active
+        capture(.notificationsEnabled(address, mode))
         guard let subscription = subscriptions[id] else { throw .subscriptionNotFound(id) }
         return subscription.snapshot
     }
@@ -474,6 +580,9 @@ public actor BLESession {
         subscription.state = .closed(reason: "unsubscribed")
 
         let address = subscription.address
+        if wasOpen {
+            capture(.notificationsDisabled(address))
+        }
         if wasOpen, connections[address.peripheral]?.state == .connected {
             let central = central
             // Best effort: the subscription is gone either way, and stray notifications that
@@ -495,13 +604,14 @@ public actor BLESession {
         if let id, subscriptions[id] == nil { throw .subscriptionNotFound(id) }
         let selected = { (subscription: Subscription) in id == nil || subscription.id == id }
         let buffered = subscriptions.values.filter(selected).reduce(0) { $0 + $1.buffer.count }
-        if wait > .zero, buffered == 0, subscriptions.values.contains(where: { selected($0) && $0.isOpen }) {
+        let canReceive = subscriptions.values.contains { selected($0) && $0.isOpen }
+        if wait > .zero, buffered == 0, canReceive {
             await waitForNotification(on: id, timeout: wait)
         }
-        return drain(id, maxCount: maxCount)
+        return drain(id, maxCount: maxCount, waitSkipped: wait > .zero && buffered == 0 && !canReceive)
     }
 
-    private func drain(_ id: SubscriptionID?, maxCount: Int) -> NotificationBatch {
+    private func drain(_ id: SubscriptionID?, maxCount: Int, waitSkipped: Bool) -> NotificationBatch {
         let ids = id.map { [$0] } ?? subscriptions.keys.sorted()
         var collected: [ValueNotification] = []
         collected.reserveCapacity(min(maxCount, 256))
@@ -534,7 +644,9 @@ public actor BLESession {
                 subscriptions[candidate] = nil
             }
         }
-        return NotificationBatch(notifications: collected, remaining: remaining, dropped: dropped, subscriptions: snapshots)
+        return NotificationBatch(
+            notifications: collected, remaining: remaining, dropped: dropped, subscriptions: snapshots,
+            waitSkipped: waitSkipped)
     }
 
     private func waitForNotification(on id: SubscriptionID?, timeout: Duration) async {
@@ -587,6 +699,21 @@ public actor BLESession {
         }
     }
 
+    // MARK: - Capture
+
+    /// Where the capture goes, or `nil` when the session records nothing.
+    public nonisolated var captureDestination: String? { captureSink?.destination }
+
+    /// Labels the capture at this point, for example before the next step of an experiment.
+    /// Does nothing when the session records nothing.
+    public func mark(_ note: String, fields: [String: CaptureValue] = [:]) {
+        capture(.marker(note: note, fields: fields))
+    }
+
+    private func capture(_ kind: CaptureEvent.Kind, at time: Date = .now) {
+        captureSink?.record(CaptureEvent(time: time, kind: kind))
+    }
+
     // MARK: - Backend events
 
     private func handle(_ event: CentralEvent) {
@@ -609,6 +736,7 @@ public actor BLESession {
 
         case .valueUpdated(let address, let value, let receivedAt):
             guard let id = subscriptionsByAddress[address] else { return }
+            capture(.notification(address, value), at: receivedAt)
             lastSequence += 1
             subscriptions[id]?.record(
                 ValueNotification(
@@ -621,6 +749,7 @@ public actor BLESession {
         guard let connection = connections.removeValue(forKey: id) else { return }
         closeSubscriptions(of: id, reason: "peripheral disconnected" + (reason.map { ": \($0)" } ?? ""))
         if connection.state == .connected {
+            capture(.disconnected(id, reason: reason))
             eventSink.yield(.peripheralDisconnected(id, name: connection.name, reason: reason))
         }
     }
@@ -712,6 +841,8 @@ private struct Connection {
     var state = ConnectionState.connecting
     var connectedAt: Date?
     var services: [GATTService]?
+    /// Whether `services` carries the 0x2901 names.
+    var hasUserDescriptions = false
     var discoveryError: BLEError?
 
     init(id: PeripheralID, name: String?) {

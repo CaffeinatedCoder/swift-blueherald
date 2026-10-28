@@ -28,6 +28,7 @@ public struct BLEMCPServer: Sendable {
         NotificationTools.unsubscribe,
         NotificationTools.read,
         ConnectionTools.rssi,
+        CaptureTools.mark,
     ]
 
     public let session: BLESession
@@ -39,7 +40,10 @@ public struct BLEMCPServer: Sendable {
     ///   session, so they can build on connections and subscriptions the agent created.
     public init(session: BLESession, additionalTools: [ToolDefinition] = [], logger: Logger = Logger(label: "ble-mcp")) {
         self.session = session
-        self.catalog = ToolCatalog(Self.builtInTools + additionalTools, writePolicy: session.configuration.writePolicy)
+        self.catalog = ToolCatalog(
+            Self.builtInTools + additionalTools,
+            writePolicy: session.configuration.writePolicy,
+            capturing: session.captureDestination != nil)
         self.logger = logger
     }
 
@@ -49,7 +53,7 @@ public struct BLEMCPServer: Sendable {
             name: Self.name,
             version: Self.version,
             title: "Bluetooth LE",
-            instructions: Self.instructions(for: session.configuration.writePolicy),
+            instructions: Self.instructions(for: session.configuration.writePolicy, capture: session.captureDestination),
             capabilities: .init(logging: .init(), tools: .init(listChanged: false)))
 
         let catalog = catalog
@@ -122,14 +126,14 @@ public struct BLEMCPServer: Sendable {
         }
     }
 
-    static func instructions(for policy: WritePolicy) -> String {
+    static func instructions(for policy: WritePolicy, capture: String? = nil) -> String {
         let writes =
             if !policy.isEnabled {
                 "Writes are disabled: ble_write and ble_write_descriptor are not offered."
-            } else if policy.allowlist.isEmpty {
+            } else if policy.allowlist.isEmpty, policy.allowedValues.isEmpty, policy.denylist.isEmpty {
                 "Writes are enabled for every writable characteristic."
             } else {
-                "Writes are enabled only for: \(policy.allowlist.sorted().map(\.description).joined(separator: ", "))."
+                "Writes are restricted: ble_status lists the characteristics and exact frames that may be written, and those that never may."
             }
         return """
             Bluetooth LE central on this Mac. Typical flow: ble_scan to find a device and its \
@@ -137,7 +141,10 @@ public struct BLEMCPServer: Sendable {
             by ble_notifications. ble_status shows adapter state and everything that is open. \
             Peripheral ids are UUIDs that CoreBluetooth assigns; they are stable on this Mac only. \
             UUID arguments accept short ("180F") and full forms. Values are returned as hex, plus text \
-            when printable. Errors carry a code and often a hint with the next step. \(writes)
+            when printable. Errors carry a code and often a hint with the next step. \(writes)\(
+                capture.map {
+                    " Everything sent and received is captured to \($0) as JSON lines; label the steps of an experiment with ble_capture_mark."
+                } ?? "")
             """
     }
 }

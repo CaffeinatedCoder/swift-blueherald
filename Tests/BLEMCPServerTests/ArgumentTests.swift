@@ -1,5 +1,6 @@
 import BLEMCPCore
 @testable import BLEMCPServer
+import Foundation
 import Logging
 import MCP
 import Testing
@@ -106,8 +107,10 @@ struct ServerConfigurationTests {
             "BLE_MCP_OPERATION_TIMEOUT_MS": "1500",
             "BLE_MCP_LOG_LEVEL": "DEBUG",
             "BLE_MCP_OWN_PERMISSION": "0",
+            "BLE_MCP_CAPTURE": "~/captures",
         ])
         #expect(!configuration.disclaimResponsibility)
+        #expect(configuration.capturePath == "~/captures")
         let session = configuration.session
         #expect(session.writePolicy == WritePolicy(isEnabled: true, allowlist: [BLEUUID(0x2A19), BLEUUID("6E400002-B5A3-F393-E0A9-E50E24DCCA9E")!]))
         #expect(session.limits == SessionLimits(maxConnections: 2, maxSubscriptions: 8, maxScans: 1, notificationBufferCapacity: 64))
@@ -116,11 +119,55 @@ struct ServerConfigurationTests {
         #expect(configuration.logLevel == .debug)
     }
 
+    @Test("frame allowlists merge the variable and the file; the denylist is read")
+    func frames() throws {
+        let file = """
+            # BB-500: harmless commands only
+            ff01:abcd03fd0278   # auth
+            FF01: ab cd 03 5e 01 d9
+
+            """
+        let configuration = try ServerConfiguration(
+            environment: [
+                "BLE_MCP_WRITE_VALUE_ALLOWLIST": "ff01:abcd035e01d9, 0xFF01:0xab 0xcd",
+                "BLE_MCP_WRITE_VALUE_ALLOWLIST_FILE": "/frames.txt",
+                "BLE_MCP_WRITE_DENYLIST": "ff03,fff1",
+            ],
+            readFile: { path in
+                #expect(path == "/frames.txt")
+                return file
+            })
+        let policy = configuration.session.writePolicy
+        #expect(
+            policy.allowedValues == [
+                BLEUUID(0xFF01): [
+                    Data([0xAB, 0xCD, 0x03, 0x5E, 0x01, 0xD9]), Data([0xAB, 0xCD]), Data([0xAB, 0xCD, 0x03, 0xFD, 0x02, 0x78]),
+                ]
+            ])
+        #expect(policy.denylist == [BLEUUID(0xFF03), BLEUUID(0xFFF1)])
+    }
+
+    @Test("an unreadable frame file is a configuration error")
+    func unreadableFrameFile() {
+        struct Missing: Error {}
+        do {
+            _ = try ServerConfiguration(
+                environment: ["BLE_MCP_WRITE_VALUE_ALLOWLIST_FILE": "/nope"], readFile: { _ in throw Missing() })
+            Issue.record("expected an error")
+        } catch {
+            #expect(error.variable == "BLE_MCP_WRITE_VALUE_ALLOWLIST_FILE")
+        }
+    }
+
     @Test(
         "invalid values fail with the variable name",
         arguments: [
             ("BLE_MCP_ALLOW_WRITES", "maybe"),
             ("BLE_MCP_WRITE_ALLOWLIST", "2a19,nope"),
+            ("BLE_MCP_WRITE_VALUE_ALLOWLIST", "ff01"),
+            ("BLE_MCP_WRITE_VALUE_ALLOWLIST", "ff01:abc"),
+            ("BLE_MCP_WRITE_VALUE_ALLOWLIST", "ff01:"),
+            ("BLE_MCP_WRITE_DENYLIST", "ff0g"),
             ("BLE_MCP_MAX_CONNECTIONS", "0"),
             ("BLE_MCP_OPERATION_TIMEOUT_MS", "fast"),
             ("BLE_MCP_LOG_LEVEL", "loud"),

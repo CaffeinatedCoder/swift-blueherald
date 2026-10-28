@@ -196,24 +196,30 @@ public actor CoreBluetoothCentral: BLECentral {
 
     /// Registers a continuation for `key`, issues the request, and suspends until a delegate
     /// callback, a disconnect or task cancellation resolves it, whichever comes first.
+    ///
+    /// The isolation is passed explicitly on purpose. Given this actor-isolated operation, the
+    /// `nonisolated(nonsending)` overload of `withTaskCancellationHandler` compiles under -O
+    /// (Swift 6.4) without the hop back to the actor after the continuation resumes: the caller
+    /// then carries on on the global executor, which aborted the first discovery in release builds.
     private func perform(
         _ key: OperationKey,
         on peripheral: PeripheralID?,
         _ request: () -> Void
     ) async throws(BLEError) -> Outcome {
         let token = pending.makeToken()
-        let result = await withTaskCancellationHandler {
-            await withCheckedContinuation { (continuation: OperationContinuation) in
-                guard !Task.isCancelled else {
-                    continuation.resume(returning: .failure(.cancelled))
-                    return
+        let result = await withTaskCancellationHandler(
+            operation: {
+                await withCheckedContinuation { (continuation: OperationContinuation) in
+                    guard !Task.isCancelled else {
+                        continuation.resume(returning: .failure(.cancelled))
+                        return
+                    }
+                    pending.enqueue(key, token: token, peripheral: peripheral, continuation: continuation)
+                    request()
                 }
-                pending.enqueue(key, token: token, peripheral: peripheral, continuation: continuation)
-                request()
-            }
-        } onCancel: {
-            Task { await self.cancel(key, token: token) }
-        }
+            },
+            onCancel: { Task { await self.cancel(key, token: token) } },
+            isolation: self)
         return try result.get()
     }
 
