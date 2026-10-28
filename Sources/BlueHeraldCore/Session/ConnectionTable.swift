@@ -40,6 +40,12 @@ struct ConnectionTable: Sendable {
         entries[id]?.attempt == attempt
     }
 
+    /// Whether the link `attempt` established is still up: not dropped, and not replaced by a
+    /// newer attempt's link.
+    func isConnected(_ id: PeripheralID, by attempt: UInt64) -> Bool {
+        isOwned(id, by: attempt) && entries[id]?.state == .connected
+    }
+
     /// Removes the entry only if `attempt` still owns it: after a disconnect it may belong to a
     /// newer attempt.
     mutating func abandon(_ id: PeripheralID, attempt: UInt64) {

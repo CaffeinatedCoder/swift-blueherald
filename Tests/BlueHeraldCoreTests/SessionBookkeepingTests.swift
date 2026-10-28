@@ -112,6 +112,21 @@ struct ConnectionTableTests {
         #expect(table[peripheral] == nil)
     }
 
+    @Test("a link counts as up for the attempt that established it, and only while it lasts")
+    func connectedByAttempt() {
+        var table = ConnectionTable()
+        let first = table.begin(peripheral, name: nil)
+        let connecting = table.isConnected(peripheral, by: first)
+        table.markConnected(peripheral, name: nil)
+        let up = table.isConnected(peripheral, by: first)
+        _ = table.lose(peripheral, reason: nil)
+        let second = table.begin(peripheral, name: nil)
+        table.markConnected(peripheral, name: nil)
+        #expect(!connecting && up)
+        #expect(!table.isConnected(peripheral, by: first))
+        #expect(table.isConnected(peripheral, by: second))
+    }
+
     @Test("connecting entries count against the limit")
     func capacity() {
         var table = ConnectionTable()

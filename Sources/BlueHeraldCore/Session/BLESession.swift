@@ -298,18 +298,21 @@ public actor BLESession {
         userDescriptions: Bool = true
     ) async throws(BLEError) -> [GATTService] {
         let connection = try connections.requireConnected(id)
+        // What is learnt over one link is written only into that link's entry: after a reconnect
+        // the entry belongs to a newer attempt, and the device may not even have the same table.
+        let attempt = connection.attempt
         var services: [GATTService]
         var isNew = false
         if !refresh, let cached = connection.services {
             services = cached
         } else {
-            services = try await discoverAttributeTable(of: id)
+            services = try await discoverAttributeTable(of: id, attempt: attempt)
             isNew = true
         }
         if userDescriptions, connections[id]?.hasUserDescriptions == false {
             services = await UserDescriptions.read(
                 of: id, into: services, from: central, perRead: min(configuration.timeouts.operation, .seconds(2)))
-            guard connections[id]?.state == .connected else { throw .disconnected(id, reason: nil) }
+            guard connections.isConnected(id, by: attempt) else { throw .disconnected(id, reason: nil) }
             connections[id]?.services = services
             connections[id]?.hasUserDescriptions = true
             isNew = true
@@ -320,7 +323,7 @@ public actor BLESession {
         return services
     }
 
-    private func discoverAttributeTable(of id: PeripheralID) async throws(BLEError) -> [GATTService] {
+    private func discoverAttributeTable(of id: PeripheralID, attempt: UInt64) async throws(BLEError) -> [GATTService] {
         let central = central
         do throws(BLEError) {
             let services = try await withDeadline(
@@ -328,13 +331,15 @@ public actor BLESession {
             ) {
                 try await central.discoverServices(of: id)
             }
-            guard connections[id]?.state == .connected else { throw .disconnected(id, reason: nil) }
+            guard connections.isConnected(id, by: attempt) else { throw .disconnected(id, reason: nil) }
             connections[id]?.services = services
             connections[id]?.hasUserDescriptions = false
             connections[id]?.discoveryError = nil
             return services
         } catch {
-            connections[id]?.discoveryError = error
+            if connections.isConnected(id, by: attempt) {
+                connections[id]?.discoveryError = error
+            }
             throw error
         }
     }
