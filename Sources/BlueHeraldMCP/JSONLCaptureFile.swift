@@ -149,7 +149,7 @@ struct CaptureLine {
             info(
                 note: "advertisement",
                 [
-                    "peripheral": .string(peripheral.id.description), "name": peripheral.name.map(CaptureValue.string),
+                    "peripheral": .string(peripheral.id.description), "name": DeviceText.clean(peripheral.name).map(CaptureValue.string),
                     "rssi": peripheral.rssi.map(CaptureValue.integer), "connectable": peripheral.isConnectable.map(CaptureValue.bool),
                     "tx_power": peripheral.txPowerLevel.map(CaptureValue.integer),
                     "manufacturer": peripheral.manufacturerData.map { .string(Hex.encode($0)) },
@@ -163,7 +163,8 @@ struct CaptureLine {
                             peripheral.serviceData.map { (Self.uuid($0.key), Self.string(Hex.encode($0.value))) }.sorted { $0.0 < $1.0 }),
                 ])
         case .connected(let peripheral, let name):
-            info(note: "connected", ["peripheral": .string(peripheral.description), "name": name.map(CaptureValue.string)])
+            info(
+                note: "connected", ["peripheral": .string(peripheral.description), "name": DeviceText.clean(name).map(CaptureValue.string)])
         case .discovered(let peripheral, let services):
             info(note: "gatt", ["peripheral": .string(peripheral.description)], json: ["services": Self.services(services)])
         case .disconnected(let peripheral, let reason):
@@ -273,7 +274,7 @@ struct CaptureLine {
                                     ("properties", array(characteristic.properties.names.map(string))),
                                     ("descriptors", array(characteristic.descriptors.map { string(uuid($0.uuid)) })),
                                 ]
-                                if let description = characteristic.userDescription {
+                                if let description = DeviceText.clean(characteristic.userDescription) {
                                     fields.append(("description", string(description)))
                                 }
                                 return object(fields)

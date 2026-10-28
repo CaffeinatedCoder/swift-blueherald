@@ -67,7 +67,7 @@ struct CaptureTests {
         GATTService(
             uuid: service.uuid, isPrimary: service.isPrimary,
             characteristics: service.characteristics.map { characteristic in
-                let names = [Fixtures.batteryLevel: "Battery", Fixtures.uartRX: "Data In", Fixtures.uartTX: "Data Out"]
+                let names = [Fixtures.batteryLevel: "Battery", Fixtures.uartRX: "Data In ", Fixtures.uartTX: "Data Out"]
                 return characteristic.with(userDescription: names[characteristic.uuid])
             })
     }

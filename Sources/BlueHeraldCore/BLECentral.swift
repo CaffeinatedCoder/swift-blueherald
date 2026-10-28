@@ -31,10 +31,10 @@ public struct ConnectedPeripheral: Hashable, Sendable {
     public let id: PeripheralID
     public let name: String?
 
-    /// - Parameter name: The GAP name, cleaned with `DeviceText`.
+    /// - Parameter name: The GAP name, as the device supplies it; see `DeviceText`.
     public init(id: PeripheralID, name: String?) {
         self.id = id
-        self.name = DeviceText.clean(name)
+        self.name = name
     }
 }
 
@@ -85,7 +85,7 @@ public protocol BLECentral: Sendable {
     /// The largest value one write can carry, which depends on the negotiated ATT MTU.
     func maximumWriteLength(for peripheral: PeripheralID, mode: WriteMode) async throws(BLEError) -> Int
 
-    /// What a backend that is not a radio wants `ble_status` to show; `nil` for a real adapter.
+    /// What a backend that is not a radio wants a status report to show; `nil` for a real adapter.
     func report() async -> BackendReport?
 }
 

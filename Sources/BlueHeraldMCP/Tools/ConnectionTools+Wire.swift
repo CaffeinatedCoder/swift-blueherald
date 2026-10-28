@@ -13,7 +13,7 @@ struct CharacteristicSummary: Encodable {
     init(_ characteristic: GATTCharacteristic) {
         uuid = characteristic.uuid.description
         name = AssignedNumbers.name(for: characteristic.uuid)
-        description = characteristic.userDescription
+        description = DeviceText.clean(characteristic.userDescription)
         properties = characteristic.properties.names
         descriptors = characteristic.descriptors.map { UUIDReference($0.uuid) }
     }
@@ -50,7 +50,7 @@ struct ConnectionReport: Encodable {
 
     init(_ snapshot: ConnectionSnapshot, includeServices: Bool = true) {
         peripheralId = snapshot.id.description
-        name = snapshot.name
+        name = DeviceText.clean(snapshot.name)
         state = snapshot.state.rawValue
         connectedAt = snapshot.connectedAt
         maxWriteLength = snapshot.maximumWriteLength.map {
@@ -176,7 +176,7 @@ struct StatusReport: Encodable {
         connections = status.connections.map { ConnectionReport($0, includeServices: false) }
         subscriptions = status.subscriptions.map(SubscriptionReport.init)
         linkLosses = status.linkLosses.map {
-            LinkLossReport(peripheralId: $0.peripheral.description, name: $0.name, reason: $0.reason, at: $0.at)
+            LinkLossReport(peripheralId: $0.peripheral.description, name: DeviceText.clean($0.name), reason: $0.reason, at: $0.at)
         }
         backend = status.backend.map(BackendReportWire.init)
     }

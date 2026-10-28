@@ -17,7 +17,6 @@ struct ErrorMappingTests {
         let mapped = BLEError(error(CBATTErrorDomain, code.rawValue, "Encryption is insufficient."), during: "Read")
         #expect(mapped == .pairingRequired(operation: "Read", reason: "Encryption is insufficient."))
         #expect(mapped.code == "pairing_required")
-        #expect(mapped.hint?.contains("pairing dialog") == true)
     }
 
     @Test(

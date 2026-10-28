@@ -53,7 +53,7 @@ public enum Fixtures {
                 manufacturerName: Data("Voltcraft\0".utf8),
                 batteryLevel: Data([87]),
             ],
-            // Real devices pad these; the session trims NULs and whitespace.
+            // Real devices pad these; the session trims the NULs and the server the whitespace.
             userDescriptions: [batteryLevel: "Battery\0", uartRX: "Data In ", uartTX: "Data Out"])
     }
 

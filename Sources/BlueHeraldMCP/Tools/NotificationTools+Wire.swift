@@ -22,7 +22,7 @@ struct SubscriptionReport: Encodable {
         serviceUuid = snapshot.address.service.description
         characteristicUuid = snapshot.address.characteristic.description
         characteristicName = AssignedNumbers.name(for: snapshot.address.characteristic)
-        characteristicDescription = snapshot.userDescription
+        characteristicDescription = DeviceText.clean(snapshot.userDescription)
         mode = snapshot.mode.rawValue
         switch snapshot.state {
         case .pending:
