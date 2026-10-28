@@ -267,7 +267,10 @@ struct EndToEndTests {
 
         let (empty, _) = try await call(client, "ble_notifications", ["wait_ms": 100])
         #expect((empty["notifications"] as? [Any])?.isEmpty == true)
-        #expect((empty["note"] as? String)?.hasPrefix("Waited 1") == true)
+        // At least the 100 ms asked for; a loaded machine may take much longer.
+        let note = try #require(empty["note"] as? String)
+        let waited = try #require(note.firstMatch(of: /^Waited (\d+) ms and nothing arrived\.$/)).1
+        #expect(try #require(Int(waited)) >= 100, "\(note)")
 
         let address = CharacteristicAddress(peripheral: meter.id, service: Fixtures.uartService, characteristic: Fixtures.uartTX)
         let sender = Task {
