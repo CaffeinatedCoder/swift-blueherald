@@ -23,7 +23,8 @@ public enum Hex {
 
     /// Decodes hex the way people and agents write it: case-insensitive, with an optional `0x`
     /// at the start of each token and whitespace, `:`, `-`, `_` or `,` between bytes.
-    /// Returns `nil` for any other character or an odd number of digits.
+    /// Returns `nil` for any other character or a token with an odd number of digits: `"1 2"` is
+    /// two half bytes, not `0x12`.
     public static func decode(_ text: some StringProtocol) -> Data? {
         let utf8 = Array(text.utf8)
         var bytes = [UInt8]()
@@ -35,6 +36,8 @@ public enum Hex {
         while index < utf8.count {
             let byte = utf8[index]
             if isSeparator(byte) {
+                // A digit never pairs with one across a separator.
+                guard high == nil else { return nil }
                 atTokenStart = true
                 index += 1
                 continue

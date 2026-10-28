@@ -174,3 +174,80 @@ struct StdioServerTransportTests {
         await server.stop()
     }
 }
+
+@Suite("End of input", .timeLimit(.minutes(1)))
+struct EndOfInputTests {
+    let input = Pipe()
+    let output = Pipe()
+
+    func responses(after lines: [String], drainTimeout: Duration = .seconds(30)) async throws -> [Int] {
+        let session = BLESession(central: FakeCentral(devices: [Fixtures.meter()]))
+        let transport = StdioServerTransport(
+            input: input.fileHandleForReading.fileDescriptor,
+            output: output.fileHandleForWriting.fileDescriptor,
+            drainTimeout: drainTimeout)
+        try input.fileHandleForWriting.write(contentsOf: Data((lines.joined(separator: "\n") + "\n").utf8))
+        try input.fileHandleForWriting.close()
+        try await BLEMCPServer(session: session).run(on: transport)
+        try output.fileHandleForWriting.close()
+        let written = try output.fileHandleForReading.readToEnd() ?? Data()
+        return try String(decoding: written, as: UTF8.self).split(separator: "\n").compactMap { line in
+            try (JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])?["id"] as? Int
+        }
+    }
+
+    static let initialize =
+        #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#
+    static let initialized = #"{"jsonrpc":"2.0","method":"notifications/initialized"}"#
+
+    @Test("requests sent just before stdin closes are still answered")
+    func answersBeforeEOF() async throws {
+        let ids = try await responses(after: [
+            Self.initialize, Self.initialized,
+            #"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+            #"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ble_status","arguments":{}}}"#,
+        ])
+        #expect(Set(ids) == [1, 2, 3])
+    }
+
+    func ledger() -> (RequestLedger, AsyncThrowingStream<Data, any Error>) {
+        let (stream, sink) = AsyncThrowingStream.makeStream(of: Data.self)
+        return (RequestLedger(sink: sink), stream)
+    }
+
+    func ends(_ stream: AsyncThrowingStream<Data, any Error>) async throws -> Bool {
+        for try await _ in stream {}
+        return true
+    }
+
+    @Test("end of input waits for responses, batches included, but not for notifications or responses")
+    func waitsForRequests() async throws {
+        let (ledger, stream) = ledger()
+        ledger.received(Data(#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.utf8))
+        ledger.received(Data(#"[{"jsonrpc":"2.0","id":"a","method":"ping"},{"jsonrpc":"2.0","method":"notifications/initialized"}]"#.utf8))
+        ledger.received(Data(#"{"jsonrpc":"2.0","id":7,"result":{}}"#.utf8))
+        #expect(ledger.inputEnded(drainTimeout: .seconds(30)) == 2)
+        ledger.sent(Data(#"{"jsonrpc":"2.0","method":"notifications/message","params":{}}"#.utf8))
+        ledger.sent(Data(#"{"jsonrpc":"2.0","id":1,"result":{}}"#.utf8))
+        #expect(ledger.unansweredCount == 1)
+        ledger.sent(Data(#"[{"jsonrpc":"2.0","id":"a","result":{}}]"#.utf8))
+        #expect(try await ends(stream))
+    }
+
+    @Test("a cancelled request is not waited for, since the SDK does not answer it")
+    func cancelled() async throws {
+        let (ledger, stream) = ledger()
+        ledger.received(Data(#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ble_scan"}}"#.utf8))
+        ledger.received(Data(#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":2}}"#.utf8))
+        #expect(ledger.inputEnded(drainTimeout: .seconds(30)) == 0)
+        #expect(try await ends(stream))
+    }
+
+    @Test("an unanswered request holds end of input only for the drain timeout")
+    func drainTimeout() async throws {
+        let (ledger, stream) = ledger()
+        ledger.received(Data(#"{"jsonrpc":"2.0","id":3,"method":"tools/call"}"#.utf8))
+        #expect(ledger.inputEnded(drainTimeout: .milliseconds(50)) == 1)
+        #expect(try await ends(stream))
+    }
+}

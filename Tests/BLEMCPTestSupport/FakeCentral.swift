@@ -76,6 +76,8 @@ public actor FakeCentral: BLECentral {
     private var readBehavior = Behavior.succeed
     private var writeBehavior = Behavior.succeed
     private var descriptorReadBehavior = Behavior.succeed
+    private var notificationBehavior = Behavior.succeed
+    private var notificationDelay = Duration.zero
     private var maximumWriteLengths: (withResponse: Int, withoutResponse: Int) = (512, 20)
     private var responder: Responder?
     private var responseDelay = Duration.zero
@@ -106,6 +108,13 @@ public actor FakeCentral: BLECentral {
 
     public func setDescriptorReadBehavior(_ behavior: Behavior) {
         descriptorReadBehavior = behavior
+    }
+
+    /// How changing the notification state behaves, after `delay`: a peripheral that takes a while
+    /// to acknowledge the CCCD write, or rejects it.
+    public func setNotificationBehavior(_ behavior: Behavior, delay: Duration = .zero) {
+        notificationBehavior = behavior
+        notificationDelay = delay
     }
 
     /// Every characteristic write runs `responder`; what it returns is notified after `delay`.
@@ -253,8 +262,14 @@ public actor FakeCentral: BLECentral {
         writes.append(Write(address: address.characteristic, descriptor: address.descriptor, value: value, mode: nil))
     }
 
-    public func setNotifications(_ enabled: Bool, for address: CharacteristicAddress) throws(BLEError) {
+    public func setNotifications(_ enabled: Bool, for address: CharacteristicAddress) async throws(BLEError) {
         _ = try device(address.peripheral)
+        // Decided when the request is made, like a peripheral's answer.
+        let behavior = notificationBehavior
+        if notificationDelay > .zero {
+            try? await Task.sleep(for: notificationDelay)
+        }
+        try await behave(behavior)
         if enabled {
             notifying.insert(address)
         } else {

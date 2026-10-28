@@ -59,7 +59,9 @@ struct HexTests {
         #expect(Hex.decode(text) == Data([0x01, 0xAB, 0xFF]))
     }
 
-    @Test("rejects odd digit counts and foreign characters", arguments: ["1", "01a", "0g", "01 zz"])
+    @Test(
+        "rejects odd digit counts, per token, and foreign characters",
+        arguments: ["1", "01a", "0g", "01 zz", "0x1 0x2", "1:2:3:4", "012 3", "a b"])
     func rejects(text: String) {
         #expect(Hex.decode(text) == nil)
     }

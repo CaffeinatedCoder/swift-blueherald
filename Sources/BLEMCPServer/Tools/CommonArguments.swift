@@ -68,7 +68,9 @@ enum CommonArguments {
             case .utf8: Data(text.utf8)
             }
         guard let decoded else {
-            throw .invalidArguments("Argument 'value' is not valid \(try arguments[encoding].rawValue).")
+            let encoding = try arguments[encoding]
+            let detail = encoding == .hex ? " Write every byte as two digits, such as 0a 1b or 0a1b." : ""
+            throw .invalidArguments("Argument 'value' is not valid \(encoding.rawValue).\(detail)")
         }
         return decoded
     }

@@ -22,6 +22,11 @@ import Synchronization
 /// device nodes. A read source would wait forever on `ble-mcp < fifo`. `read` returning 0 is the
 /// one EOF signal every descriptor type gives.
 ///
+/// End of input does not end the session at once: a client may close stdin right after its last
+/// request, the way MCP describes ending a stdio session, and the SDK answers each request from a
+/// task of its own. The stream of received messages therefore stays open until every request read
+/// so far has been answered or cancelled, or until `drainTimeout` passes.
+///
 /// File descriptor flags are left alone. stdin and stdout are often shared with the launching
 /// process (a terminal in particular), and `O_NONBLOCK` set on such a shared description outlives
 /// this process. The transport does not own the descriptors and never closes them.
@@ -34,25 +39,33 @@ public actor StdioServerTransport: Transport {
     private let messages: AsyncThrowingStream<Data, any Error>
     private let messageSink: AsyncThrowingStream<Data, any Error>.Continuation
     private let readerState = ReaderState()
+    private let ledger: RequestLedger
+    private let drainTimeout: Duration
     private var isConnected = false
 
+    /// - Parameter drainTimeout: How long, after end of input, requests still being handled get to
+    ///   send their responses.
     public init(
         input: Int32 = STDIN_FILENO,
         output: Int32 = STDOUT_FILENO,
+        drainTimeout: Duration = .seconds(30),
         logger: Logger = Logger(label: "ble-mcp.stdio")
     ) {
         self.input = input
         self.output = output
+        self.drainTimeout = drainTimeout
         self.logger = logger
         (messages, messageSink) = AsyncThrowingStream.makeStream(of: Data.self)
+        ledger = RequestLedger(sink: messageSink)
     }
 
     public func connect() {
         guard !isConnected else { return }
         isConnected = true
         Self.suppressSIGPIPE(on: output)
-        let reader = Thread { [input, messageSink, readerState, logger] in
-            Self.readLoop(from: input, into: messageSink, state: readerState, logger: logger)
+        let reader = Thread { [input, messageSink, readerState, ledger, drainTimeout, logger] in
+            Self.readLoop(
+                from: input, into: messageSink, state: readerState, ledger: ledger, drainTimeout: drainTimeout, logger: logger)
         }
         reader.name = "ble-mcp.stdio.read"
         reader.start()
@@ -71,9 +84,13 @@ public actor StdioServerTransport: Transport {
         let frame = message + Data([UInt8(ascii: "\n")])
         let output = output
         // Enqueued from the actor in call order, so the serial write queue preserves message order.
+        let ledger = ledger
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
             writeQueue.async {
-                continuation.resume(with: Self.writeAll(frame, to: output))
+                let result = Self.writeAll(frame, to: output)
+                // Answered either way: a response that could not be written never will be.
+                ledger.sent(message)
+                continuation.resume(with: result)
             }
         }
     }
@@ -88,6 +105,8 @@ public actor StdioServerTransport: Transport {
         from descriptor: Int32,
         into sink: AsyncThrowingStream<Data, any Error>.Continuation,
         state: ReaderState,
+        ledger: RequestLedger,
+        drainTimeout: Duration,
         logger: Logger
     ) {
         var framer = LineFramer()
@@ -97,15 +116,19 @@ public actor StdioServerTransport: Transport {
             guard !state.isClosed else { return }
             if count > 0 {
                 let result = framer.append(buffer[..<count])
-                result.messages.forEach { sink.yield($0) }
+                for message in result.messages {
+                    // Recorded before delivery, so the response cannot be sent before it is expected.
+                    ledger.received(message)
+                    sink.yield(message)
+                }
                 if result.discardedOversizedMessage {
                     logger.error("Discarded an incoming message larger than \(framer.maximumMessageLength) bytes")
                 }
                 continue
             }
             if count == 0 {
-                logger.notice("EOF on stdin")
-                sink.finish()
+                let unanswered = ledger.inputEnded(drainTimeout: drainTimeout)
+                logger.notice(unanswered == 0 ? "EOF on stdin" : "EOF on stdin; answering \(unanswered) requests first")
                 return
             }
             switch errno {
@@ -170,6 +193,102 @@ private final class ReaderState: Sendable {
 
     func close() {
         closed.store(true, ordering: .releasing)
+    }
+}
+
+/// The requests read but not answered yet, so that end of input can wait for their responses.
+final class RequestLedger: Sendable {
+    private struct State {
+        var unanswered: Set<ID> = []
+        var hasInputEnded = false
+    }
+
+    private let state = Mutex(State())
+    private let sink: AsyncThrowingStream<Data, any Error>.Continuation
+
+    init(sink: AsyncThrowingStream<Data, any Error>.Continuation) {
+        self.sink = sink
+    }
+
+    var unansweredCount: Int { state.withLock { $0.unanswered.count } }
+
+    /// Notes the requests in an incoming message, and the ones a cancellation withdraws: the SDK
+    /// does not answer a cancelled request.
+    func received(_ message: Data) {
+        let envelopes = Envelope.decode(message)
+        state.withLock { state in
+            for envelope in envelopes {
+                if envelope.method == "notifications/cancelled", let id = envelope.cancelledRequest {
+                    state.unanswered.remove(id)
+                } else if envelope.method != nil, let id = envelope.id {
+                    state.unanswered.insert(id)
+                }
+            }
+        }
+    }
+
+    /// Notes the responses in an outgoing message.
+    func sent(_ message: Data) {
+        guard unansweredCount > 0 else { return }
+        let answered = Envelope.decode(message).compactMap { $0.method == nil ? $0.id : nil }
+        guard !answered.isEmpty else { return }
+        state.withLock { $0.unanswered.subtract(answered) }
+        finishIfDrained()
+    }
+
+    /// Ends the stream once every request has been answered, or after `drainTimeout`.
+    /// Returns how many requests were still unanswered.
+    func inputEnded(drainTimeout: Duration) -> Int {
+        let unanswered = state.withLock { state in
+            state.hasInputEnded = true
+            return state.unanswered.count
+        }
+        if unanswered == 0 {
+            sink.finish()
+        } else {
+            let sink = sink
+            DispatchQueue.global().asyncAfter(deadline: .now() + drainTimeout / .seconds(1)) { sink.finish() }
+        }
+        return unanswered
+    }
+
+    private func finishIfDrained() {
+        if state.withLock({ $0.hasInputEnded && $0.unanswered.isEmpty }) {
+            sink.finish()
+        }
+    }
+
+    /// The fields of a JSON-RPC message that tell requests, responses and cancellations apart.
+    private struct Envelope: Decodable {
+        struct Parameters: Decodable {
+            let requestId: ID?
+        }
+
+        let id: ID?
+        let method: String?
+        let params: Parameters?
+
+        var cancelledRequest: ID? { params?.requestId }
+
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try? container.decodeIfPresent(ID.self, forKey: .id)
+            method = try? container.decodeIfPresent(String.self, forKey: .method)
+            params = try? container.decodeIfPresent(Parameters.self, forKey: .params)
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case id, method, params
+        }
+
+        /// A message or a batch of them; anything unreadable has no requests.
+        static func decode(_ message: Data) -> [Envelope] {
+            let decoder = JSONDecoder()
+            if message.first(where: { $0 != UInt8(ascii: " ") && $0 != UInt8(ascii: "\t") }) == UInt8(ascii: "[") {
+                return (try? decoder.decode([Envelope].self, from: message)) ?? []
+            }
+            return (try? decoder.decode(Envelope.self, from: message)).map { [$0] } ?? []
+        }
     }
 }
 

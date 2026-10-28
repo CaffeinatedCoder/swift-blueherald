@@ -35,6 +35,7 @@ public actor BLESession {
     private var lastSubscriptionID = 0
     private var lastSequence: UInt64 = 0
     private var lastWaiterToken: UInt64 = 0
+    private var lastConnectAttempt: UInt64 = 0
 
     private static let seenCapacity = 4096
     private static let linkLossCapacity = 64
@@ -256,7 +257,9 @@ public actor BLESession {
         try await ensurePoweredOn()
         guard connections[id] == nil else { throw .alreadyConnecting(id) }
         try ensureConnectionCapacity()
-        connections[id] = Connection(id: id, name: seen[id]?.name)
+        lastConnectAttempt += 1
+        let attempt = lastConnectAttempt
+        connections[id] = Connection(id: id, name: seen[id]?.name, attempt: attempt)
 
         let central = central
         let peripheral: ConnectedPeripheral
@@ -265,13 +268,17 @@ public actor BLESession {
                 try await central.connect(id)
             }
         } catch {
-            if connections[id]?.state == .connecting { connections[id] = nil }
+            // After a disconnect, the entry may belong to a newer attempt by now.
+            if connections[id]?.attempt == attempt { connections[id] = nil }
             throw error
         }
 
-        guard connections[id] != nil else {
-            // Disconnected or shut down while the link came up.
-            await central.disconnect(id)
+        guard connections[id]?.attempt == attempt else {
+            // Disconnected or shut down while the link came up. A newer attempt that owns the
+            // entry now gets this same link, so only an untracked one is closed.
+            if connections[id] == nil {
+                await central.disconnect(id)
+            }
             throw .disconnected(id, reason: "the connection was closed while it was being established")
         }
         connections[id]?.markConnected(name: peripheral.name ?? seen[id]?.name)
@@ -570,9 +577,13 @@ public actor BLESession {
         let clock = ContinuousClock()
         let deadline = clock.now + timeout
         var reply = takeReply(on: id, after: mark, prefix: prefix)
-        while reply == nil, subscriptions[id]?.isOpen == true, clock.now < deadline {
+        // A cancelled wait returns at once, so cancellation must end the loop.
+        while reply == nil, subscriptions[id]?.isOpen == true, clock.now < deadline, !Task.isCancelled {
             await waitForNotification(on: id, timeout: deadline - clock.now)
             reply = takeReply(on: id, after: mark, prefix: prefix)
+        }
+        if reply == nil, Task.isCancelled {
+            throw .cancelled
         }
         if reply == nil, subscriptions[id]?.isOpen != true {
             // The link went while waiting; say so rather than reporting a silent device.
@@ -595,13 +606,24 @@ public actor BLESession {
     // MARK: - Subscriptions
 
     /// Enables notifications (or indications) and starts buffering them. Subscribing to a
-    /// characteristic that already has an open subscription returns that subscription.
+    /// characteristic that already has an open subscription returns that subscription, once
+    /// notifications are on: a call that arrives while another is still enabling them waits for
+    /// it, and tries again itself if that one fails.
     public func subscribe(_ selector: CharacteristicSelector) async throws(BLEError) -> SubscriptionSnapshot {
-        let target = try await resolve(selector)
-        let address = target.address
-        if let existing = subscriptionsByAddress[address], let subscription = subscriptions[existing] {
-            return subscription.snapshot
+        while true {
+            let target = try await resolve(selector)
+            guard let existing = subscriptionsByAddress[target.address], let subscription = subscriptions[existing] else {
+                return try await enableSubscription(target)
+            }
+            guard subscription.state == .pending else { return subscription.snapshot }
+            // Woken when the other call activates or discards it; its own deadline bounds the wait.
+            await waitForNotification(on: existing, timeout: configuration.timeouts.operation)
+            guard !Task.isCancelled else { throw .cancelled }
         }
+    }
+
+    private func enableSubscription(_ target: ResolvedCharacteristic) async throws(BLEError) -> SubscriptionSnapshot {
+        let address = target.address
 
         let properties = target.characteristic.properties
         let mode: NotificationMode
@@ -641,6 +663,7 @@ public actor BLESession {
             throw .disconnected(address.peripheral, reason: "the peripheral disconnected while subscribing")
         }
         subscriptions[id]?.state = .active
+        resumeJoiners(of: id)
         capture(.notificationsEnabled(address, mode))
         guard let subscription = subscriptions[id] else { throw .subscriptionNotFound(id) }
         return subscription.snapshot
@@ -772,6 +795,14 @@ public actor BLESession {
         guard !waiters.isEmpty else { return }
         let ready = waiters.filter { $0.isWaiting(for: id) }
         waiters.removeAll { $0.isWaiting(for: id) }
+        ready.forEach { $0.continuation.resume() }
+    }
+
+    /// Wakes the calls waiting for `id` to become active. Waits on any subscription are left alone,
+    /// since nothing arrived.
+    private func resumeJoiners(of id: SubscriptionID) {
+        let ready = waiters.filter { $0.subscription == id }
+        waiters.removeAll { $0.subscription == id }
         ready.forEach { $0.continuation.resume() }
     }
 
@@ -937,6 +968,8 @@ private struct ActiveScan {
 
 private struct Connection {
     let id: PeripheralID
+    /// Which `connect` call created the entry.
+    let attempt: UInt64
     var name: String?
     var state = ConnectionState.connecting
     var connectedAt: Date?
@@ -945,8 +978,9 @@ private struct Connection {
     var hasUserDescriptions = false
     var discoveryError: BLEError?
 
-    init(id: PeripheralID, name: String?) {
+    init(id: PeripheralID, name: String?, attempt: UInt64) {
         self.id = id
+        self.attempt = attempt
         self.name = name
     }
 
