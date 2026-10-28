@@ -88,6 +88,50 @@ struct TransactTests {
         #expect(try await session.notifications(maxCount: 10).notifications.map(\.value) == [stale])
     }
 
+    @Test("a notification that arrives while the write is being prepared is not taken for the reply")
+    func notificationWhilePreparing() async throws {
+        let session = try await makeSession()
+        let subscription = try await session.subscribe(selector(Fixtures.uartTX))
+        let (central, tx, ack) = (central, tx, ack)
+        await central.setResponder(delay: .milliseconds(10)) { _, _ in [(tx, ack)] }
+        await central.hold(.maximumWriteLength)
+        let exchange = Task { [self] in try await self.exchange(session) }
+        try await waitUntil { await central.waiting[.maximumWriteLength] == 1 }
+
+        let early = Data([0xAB, 0xCD, 0x04, 0x00])
+        await central.notify(early, from: subscription.address)
+        try await waitUntil { try await session.notifications(maxCount: 0).remaining == 1 }
+        await central.release(.maximumWriteLength)
+
+        let result = try await exchange.value
+        #expect(result.reply?.value == ack)
+        #expect(result.unmatched == 0)
+        #expect(try await session.notifications(maxCount: 10).notifications.map(\.value) == [early])
+    }
+
+    @Test("a notification received before the write but handed over during it is not taken for the reply")
+    func notificationHandedOverLate() async throws {
+        let session = try await makeSession()
+        let subscription = try await session.subscribe(selector(Fixtures.uartTX))
+        let (central, tx, ack) = (central, tx, ack)
+        await central.setResponder(delay: .milliseconds(10)) { _, _ in [(tx, ack)] }
+        let beforeTheWrite = Date.now
+        await central.hold(.write)
+        let exchange = Task { [self] in try await self.exchange(session) }
+        try await waitUntil { await central.waiting[.write] == 1 }
+
+        // The backend got it before the write went out, but the session only hears of it now.
+        let early = Data([0xAB, 0xCD, 0x04, 0x00])
+        await central.notify(early, from: subscription.address, at: beforeTheWrite)
+        try await waitUntil { try await session.notifications(maxCount: 0).remaining == 1 }
+        await central.release(.write)
+
+        let result = try await exchange.value
+        #expect(result.reply?.value == ack)
+        #expect(result.unmatched == 0)
+        #expect(try await session.notifications(maxCount: 10).notifications.map(\.value) == [early])
+    }
+
     @Test("no answer is not an error: the write happened and the reply is missing")
     func noReply() async throws {
         let session = try await makeSession()

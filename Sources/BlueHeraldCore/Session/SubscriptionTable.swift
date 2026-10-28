@@ -83,14 +83,19 @@ struct SubscriptionTable: Sendable {
         return id
     }
 
-    /// Removes and returns the first notification after `mark` that starts with `prefix`.
-    mutating func takeFirst(on id: SubscriptionID, after mark: UInt64, prefix: Data) -> ValueNotification? {
-        entries[id]?.buffer.removeFirst { $0.sequence > mark && $0.value.starts(with: prefix) }
+    /// Where a reply to a write that goes out now can start.
+    func replyWindow(sentAt: Date = .now) -> ReplyWindow {
+        ReplyWindow(after: lastSequence, sentAt: sentAt)
     }
 
-    /// Buffered notifications after `mark` that do not start with `prefix`.
-    func unmatched(on id: SubscriptionID, after mark: UInt64, prefix: Data) -> Int {
-        entries[id]?.buffer.elements.count { $0.sequence > mark && !$0.value.starts(with: prefix) } ?? 0
+    /// Removes and returns the first notification in `window` that starts with `prefix`.
+    mutating func takeFirst(on id: SubscriptionID, in window: ReplyWindow, prefix: Data) -> ValueNotification? {
+        entries[id]?.buffer.removeFirst { window.contains($0) && $0.value.starts(with: prefix) }
+    }
+
+    /// Buffered notifications in `window` that do not start with `prefix`.
+    func unmatched(on id: SubscriptionID, in window: ReplyWindow, prefix: Data) -> Int {
+        entries[id]?.buffer.elements.count { window.contains($0) && !$0.value.starts(with: prefix) } ?? 0
     }
 
     func bufferedCount(in id: SubscriptionID?) -> Int {
@@ -144,6 +149,22 @@ struct SubscriptionTable: Sendable {
             }
         }
         return Drained(notifications: collected, remaining: remaining, dropped: dropped, subscriptions: snapshots)
+    }
+}
+
+/// The notifications that can answer a write: recorded after the session-wide sequence number `after`
+/// and received by the backend no earlier than the write went out. The sequence alone is not enough,
+/// because a notification the backend received before the write can still be handed to the
+/// session after it, while the session waits for the write to complete.
+///
+/// `receivedAt` and `sentAt` are both wall-clock times taken in this process, so a clock that is
+/// set back during the exchange can only make a real reply look early: it is missed, never invented.
+struct ReplyWindow: Sendable {
+    let after: UInt64
+    let sentAt: Date
+
+    func contains(_ notification: ValueNotification) -> Bool {
+        notification.sequence > after && notification.receivedAt >= sentAt
     }
 }
 

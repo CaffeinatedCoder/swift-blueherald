@@ -251,15 +251,31 @@ struct SubscriptionTableTests {
         let again = table.activate(id)
         #expect(activated && !again)
         _ = table.record(Data([0xAA, 1]), from: uart, receivedAt: .now)
-        let mark = table.lastSequence
+        let window = table.replyWindow(sentAt: .distantPast)
         _ = table.record(Data([0xBB, 2]), from: uart, receivedAt: .now)
         _ = table.record(Data([0xAA, 3]), from: uart, receivedAt: .now)
-        #expect(table.unmatched(on: id, after: mark, prefix: Data([0xAA])) == 1)
-        let reply = table.takeFirst(on: id, after: mark, prefix: Data([0xAA]))
-        let none = table.takeFirst(on: id, after: mark, prefix: Data([0xAA]))
+        #expect(table.unmatched(on: id, in: window, prefix: Data([0xAA])) == 1)
+        let reply = table.takeFirst(on: id, in: window, prefix: Data([0xAA]))
+        let none = table.takeFirst(on: id, in: window, prefix: Data([0xAA]))
         #expect(reply?.value == Data([0xAA, 3]))
         #expect(none == nil)
         #expect(table.bufferedCount(in: id) == 2)
+    }
+
+    @Test("a reply window holds what came after its mark and was received no earlier than the write")
+    func replyWindow() {
+        var table = SubscriptionTable()
+        let id = add(&table, uart)
+        _ = table.activate(id)
+        let sentAt = Date.now
+        _ = table.record(Data([1]), from: uart, receivedAt: sentAt)
+        let window = table.replyWindow(sentAt: sentAt)
+        // Received before the write, recorded after the mark: handed over late.
+        _ = table.record(Data([2]), from: uart, receivedAt: sentAt - 0.001)
+        _ = table.record(Data([3]), from: uart, receivedAt: sentAt)
+        #expect(table.unmatched(on: id, in: window, prefix: Data([0xFF])) == 1)
+        #expect(table.takeFirst(on: id, in: window, prefix: Data())?.value == Data([3]))
+        #expect(table.takeFirst(on: id, in: window, prefix: Data()) == nil)
     }
 }
 
