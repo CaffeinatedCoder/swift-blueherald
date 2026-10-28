@@ -20,6 +20,8 @@ let strictSettings: [SwiftSetting] = [
     .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
     .enableUpcomingFeature("InferIsolatedConformances"),
     .enableUpcomingFeature("ImmutableWeakCaptures"),
+    // Every remaining unsafe construct is marked `unsafe` at its use, with a comment saying why.
+    .strictMemorySafety(),
 ]
 
 let package = Package(

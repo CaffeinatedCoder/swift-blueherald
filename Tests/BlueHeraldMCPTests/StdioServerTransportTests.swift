@@ -73,17 +73,17 @@ struct StdioServerTransportTests {
     @Test("EOF on a named FIFO ends the stream", .timeLimit(.minutes(1)))
     func fifoEOF() async throws {
         let path = FileManager.default.temporaryDirectory.appending(path: "blueherald-\(UUID().uuidString).fifo").path
-        #expect(mkfifo(path, 0o600) == 0)
-        defer { unlink(path) }
+        #expect(unsafe mkfifo(path, 0o600) == 0)
+        defer { unsafe unlink(path) }
         // Open the read end without blocking for a writer, then make it blocking again like a shell redirect.
-        let reader = open(path, O_RDONLY | O_NONBLOCK)
+        let reader = unsafe open(path, O_RDONLY | O_NONBLOCK)
         #expect(fcntl(reader, F_SETFL, fcntl(reader, F_GETFL) & ~O_NONBLOCK) == 0)
-        let writer = open(path, O_WRONLY)
+        let writer = unsafe open(path, O_WRONLY)
         defer { close(reader) }
 
         let transport = StdioServerTransport(input: reader, output: output.fileHandleForWriting.fileDescriptor)
         await transport.connect()
-        _ = Data("{\"id\":1}\n".utf8).withUnsafeBytes { write(writer, $0.baseAddress, $0.count) }
+        _ = unsafe Data("{\"id\":1}\n".utf8).withUnsafeBytes { unsafe write(writer, $0.baseAddress, $0.count) }
         close(writer)
 
         var received: [String] = []
@@ -141,7 +141,7 @@ struct StdioServerTransportTests {
             var bytes = Data()
             var chunk = [UInt8](repeating: 0, count: 4096)
             while bytes.count < expected {
-                let count = chunk.withUnsafeMutableBytes { read(reader, $0.baseAddress, $0.count) }
+                let count = chunk.withUnsafeMutableBytes { unsafe read(reader, $0.baseAddress, $0.count) }
                 guard count > 0 else { break }
                 bytes.append(contentsOf: chunk[..<count])
                 // Pause now and then, so the pipe fills and the writer meets EAGAIN.

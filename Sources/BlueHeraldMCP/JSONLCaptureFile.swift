@@ -1,13 +1,9 @@
-#if canImport(Darwin)
-import Darwin
-#elseif canImport(Glibc)
-import Glibc
-#endif
 public import BlueHeraldCore
 import Dispatch
 public import Foundation
 public import Logging
 import Synchronization
+import System
 
 /// A `CaptureSink` that writes JSON lines in the format swift-dragoman's `CaptureLog` loads as a
 /// test fixture: `{"t": seconds, "dir": "tx"|"rx"|"info", "uuid": "ff01", "hex": "abcd", "note": …}`,
@@ -18,7 +14,7 @@ import Synchronization
 /// I/O run on a serial queue, off the session's executor.
 public final class JSONLCaptureFile: CaptureSink {
     public let destination: String
-    private let descriptor: Int32
+    private let descriptor: FileDescriptor
     private let start: Date
     private let queue = DispatchQueue(label: "blueherald.capture", qos: .utility)
     private let logger: Logger
@@ -30,12 +26,12 @@ public final class JSONLCaptureFile: CaptureSink {
     ///   time. Any other path names a file that is created, or appended to if it exists.
     public init(path: String, startedAt start: Date = .now, logger: Logger = Logger(label: "blueherald")) throws(CaptureFileError) {
         let path = NSString(string: path).expandingTildeInPath
-        var isDirectory: ObjCBool = false
-        if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue {
+        // Resource values describe a symlink itself, so a link to a directory is resolved first.
+        let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+        if (try? resolved.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
             (descriptor, destination) = try Self.createFile(in: path, startedAt: start)
         } else {
-            descriptor = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0o644)
-            guard descriptor >= 0 else { throw CaptureFileError(path: path, errno: errno) }
+            descriptor = try Self.open(path, options: [.create, .append, .closeOnExec])
             destination = path
         }
         self.start = start
@@ -47,7 +43,7 @@ public final class JSONLCaptureFile: CaptureSink {
     }
 
     deinit {
-        close(descriptor)
+        try? descriptor.close()
     }
 
     public func record(_ event: CaptureEvent) {
@@ -63,53 +59,58 @@ public final class JSONLCaptureFile: CaptureSink {
 
     private func append(_ line: String) {
         guard !hasFailed.load(ordering: .relaxed) else { return }
-        var bytes = Array(line.utf8)
-        bytes.append(UInt8(ascii: "\n"))
-        let failure: Int32? = bytes.withUnsafeBytes { buffer in
-            var offset = 0
-            while offset < buffer.count {
-                let written = write(descriptor, buffer.baseAddress! + offset, buffer.count - offset)
-                if written >= 0 {
-                    offset += written
-                } else if errno != EINTR {
-                    return errno
-                }
-            }
-            return nil
-        }
-        if let failure {
+        do {
+            // writeAll retries interrupted and partial writes until the whole row is in the file.
+            _ = try descriptor.writeAll(line.utf8 + [UInt8(ascii: "\n")])
+        } catch {
             // A full disk must not take the server down; the capture just ends, loudly, once.
             hasFailed.store(true, ordering: .relaxed)
-            logger.error(
-                "capture stopped",
-                metadata: ["path": "\(destination)", "error": "\(String(cString: strerror(failure)))"])
+            logger.error("capture stopped", metadata: ["path": "\(destination)", "error": "\(error)"])
         }
     }
 
-    private static func createFile(in directory: String, startedAt start: Date) throws(CaptureFileError) -> (Int32, String) {
+    private static func open(_ path: String, options: FileDescriptor.OpenOptions) throws(CaptureFileError) -> FileDescriptor {
+        do {
+            return try FileDescriptor.open(
+                FilePath(path), .writeOnly, options: options, permissions: [.ownerReadWrite, .groupRead, .otherRead])
+        } catch let error as Errno {
+            throw CaptureFileError(path: path, errno: error)
+        } catch {
+            throw CaptureFileError(path: path, errno: .ioError)
+        }
+    }
+
+    private static func createFile(in directory: String, startedAt start: Date) throws(CaptureFileError) -> (FileDescriptor, String) {
         let parts = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: start)
-        let two = { (value: Int?) in String(format: "%02d", value ?? 0) }
+        let two = { (value: Int?) in
+            let digits = String(value ?? 0)
+            return digits.count < 2 ? "0" + digits : digits
+        }
         let stamp = "\(parts.year ?? 0)-\(two(parts.month))-\(two(parts.day))-\(two(parts.hour))\(two(parts.minute))\(two(parts.second))"
         let base = URL(fileURLWithPath: directory, isDirectory: true)
         // Two servers started in the same second must not share, or clobber, a file.
         for attempt in 1...100 {
             let name = "\(BlueHeraldServer.name)-\(stamp)" + (attempt == 1 ? "" : "-\(attempt)") + ".jsonl"
             let path = base.appendingPathComponent(name).path
-            let descriptor = open(path, O_WRONLY | O_CREAT | O_EXCL | O_APPEND | O_CLOEXEC, 0o644)
-            if descriptor >= 0 { return (descriptor, path) }
-            guard errno == EEXIST else { throw CaptureFileError(path: path, errno: errno) }
+            do {
+                return (try open(path, options: [.create, .exclusiveCreate, .append, .closeOnExec]), path)
+            } catch  where error.errno == .fileExists {
+                continue
+            }
         }
-        throw CaptureFileError(path: directory, errno: EEXIST)
+        throw CaptureFileError(path: directory, errno: .fileExists)
     }
 }
 
 public struct CaptureFileError: Error, CustomStringConvertible {
     public let path: String
     public let reason: String
+    let errno: Errno
 
-    init(path: String, errno code: Int32) {
+    init(path: String, errno: Errno) {
         self.path = path
-        self.reason = String(cString: strerror(code))
+        self.errno = errno
+        self.reason = errno.description
     }
 
     public var description: String {

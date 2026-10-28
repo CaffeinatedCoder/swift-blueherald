@@ -62,6 +62,7 @@ BlueHeraldCore           domain model, BLECentral protocol, BLESession actor (no
 - Tool arguments are declared once as a `ToolArgument`, which produces both the JSON schema and the parsing. Do not parse arguments by hand.
 - Values are immutable, `Sendable` and typed; use phantom-typed identifiers rather than bare strings or UUIDs. Avoid `[String: Any]` and `JSONSerialization`. Justify any new dependency against performance, immutability and robustness.
 - Newest language features first (Swift 6 mode, typed throws, `Synchronization`, upcoming features as enabled in `Package.swift`).
+- Every target builds with `StrictMemorySafety`. Prefer `Span` and safe APIs (System's `FileDescriptor`, Foundation); where only a pointer API exists, mark the expression `unsafe` and say in a comment why it is sound.
 
 ## Adding or changing a tool
 

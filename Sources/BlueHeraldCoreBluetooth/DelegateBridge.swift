@@ -1,6 +1,9 @@
 #if canImport(CoreBluetooth)
 import BlueHeraldCore
-@preconcurrency import CoreBluetooth
+// CBPeripheral, CBService and friends are not Sendable, yet every callback hands them to the actor.
+// That is sound only because CoreBluetooth calls back on the actor's own queue, which
+// `assumeIsolated` checks; the compiler cannot see it, hence the unchecked import.
+@preconcurrency @unsafe import CoreBluetooth
 import Foundation
 
 /// Receives CoreBluetooth delegate callbacks and forwards them into `CoreBluetoothCentral`.

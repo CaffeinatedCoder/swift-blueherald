@@ -148,7 +148,7 @@ BlueHeraldCore           domain model, BLECentral protocol, BLESession actor (no
 - **Errors** are typed (`throws(BLEError)`) through the core and backend, and normalised once at each boundary.
 - **Captures** are recorded by the session, which knows what the agent asked for, through a `CaptureSink`. `JSONLCaptureFile` formats and appends rows on its own serial queue, off the session's executor.
 
-Swift features in use: Swift 6 language mode with complete concurrency checking, typed throws, `ExistentialAny`, `InternalImportsByDefault`, `MemberImportVisibility`, `NonisolatedNonsendingByDefault`, custom actor executors, `Mutex` and `Atomic` from `Synchronization`, `UInt128` (UUIDs are a single 128-bit value), `InlineArray`, and phantom-typed identifiers (`ScanID` and `SubscriptionID` cannot be mixed up). Tests use Swift Testing with parameterised cases.
+Swift features in use: Swift 6 language mode with complete concurrency checking, typed throws, `ExistentialAny`, `InternalImportsByDefault`, `MemberImportVisibility`, `NonisolatedNonsendingByDefault`, custom actor executors, `Mutex` and `Atomic` from `Synchronization`, `UInt128` (UUIDs are a single 128-bit value), `InlineArray`, `StrictMemorySafety` with `Span` and `MutableSpan` (hex encoding reads and writes through spans), and phantom-typed identifiers (`ScanID` and `SubscriptionID` cannot be mixed up). Tests use Swift Testing with parameterised cases.
 
 ### Adding device-specific tools
 

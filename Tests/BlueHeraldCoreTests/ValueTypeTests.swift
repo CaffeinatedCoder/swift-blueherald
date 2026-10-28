@@ -24,6 +24,15 @@ struct BLEUUIDTests {
         #expect(BLEUUID(uuid.uuid) == uuid)
     }
 
+    @Test("Foundation UUIDs convert in byte order, not just round trip")
+    func foundationByteOrder() throws {
+        let foundation = try #require(UUID(uuidString: "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"))
+        let uuid = BLEUUID(foundation)
+        #expect(uuid.description == "6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
+        #expect(uuid.uuid == foundation)
+        #expect(BLEUUID(0x2A19).uuid.uuidString == "00002A19-0000-1000-8000-00805F9B34FB")
+    }
+
     @Test("32-bit SIG UUIDs print as eight digits")
     func thirtyTwoBit() throws {
         let uuid = try #require(BLEUUID("1234ABCD"))
