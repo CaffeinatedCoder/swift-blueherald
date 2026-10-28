@@ -18,25 +18,28 @@ enum ResponsibilityDisclaimer {
 
     /// In the original process: spawns the disclaimed child, relays its exit status and never
     /// returns. In the child, or when the SPI is unavailable: returns immediately.
+    ///
+    /// posix_spawn, its attributes and the SPI take C pointers that no safe Swift API wraps; every
+    /// one of them lives only for the calls in this function, which runs once, before any task.
     static func relaunchDisclaimedIfNeeded() {
-        guard getenv(markerVariable) == nil,
+        var environment = ProcessInfo.processInfo.environment
+        guard environment[markerVariable] == nil,
             let executable = Bundle.main.executablePath,
-            let setDisclaim = disclaimFunction()
+            let setDisclaim = unsafe disclaimFunction()
         else { return }
 
         var attributes: posix_spawnattr_t?
-        guard posix_spawnattr_init(&attributes) == 0 else { return }
-        defer { posix_spawnattr_destroy(&attributes) }
-        guard setDisclaim(&attributes, 1) == 0 else { return }
+        guard unsafe posix_spawnattr_init(&attributes) == 0 else { return }
+        defer { unsafe posix_spawnattr_destroy(&attributes) }
+        guard unsafe setDisclaim(&attributes, 1) == 0 else { return }
 
-        var environment = ProcessInfo.processInfo.environment
         environment[markerVariable] = "1"
-        let environmentBlock = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
-        defer { environmentBlock.forEach { free($0) } }
+        let environmentBlock = unsafe environment.map { unsafe strdup("\($0.key)=\($0.value)") } + [nil]
+        defer { unsafe environmentBlock.forEach { unsafe free($0) } }
 
         var child: pid_t = 0
         // No file actions: the child inherits stdin, stdout and stderr and speaks MCP directly.
-        guard posix_spawn(&child, executable, nil, &attributes, CommandLine.unsafeArgv, environmentBlock) == 0 else {
+        guard unsafe posix_spawn(&child, executable, nil, &attributes, CommandLine.unsafeArgv, environmentBlock) == 0 else {
             return
         }
 
@@ -48,7 +51,7 @@ enum ResponsibilityDisclaimer {
         }
 
         var status: Int32 = 0
-        while waitpid(child, &status, 0) == -1, errno == EINTR {}
+        while unsafe waitpid(child, &status, 0) == -1, errno == EINTR {}
         // Decode the wait status by hand: WIFEXITED and friends are macros Swift cannot import.
         let terminatingSignal = status & 0x7F
         exit(terminatingSignal == 0 ? (status >> 8) & 0xFF : 128 + terminatingSignal)
@@ -58,10 +61,10 @@ enum ResponsibilityDisclaimer {
 
     private static func disclaimFunction() -> SetDisclaim? {
         // RTLD_DEFAULT: search every image already loaded into the process.
-        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "responsibility_spawnattrs_setdisclaim") else {
+        guard let symbol = unsafe dlsym(UnsafeMutableRawPointer(bitPattern: -2), "responsibility_spawnattrs_setdisclaim") else {
             return nil
         }
-        return unsafeBitCast(symbol, to: SetDisclaim.self)
+        return unsafe unsafeBitCast(symbol, to: SetDisclaim.self)
     }
 }
 

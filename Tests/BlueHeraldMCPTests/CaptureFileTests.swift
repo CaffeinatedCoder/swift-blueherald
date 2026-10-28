@@ -136,6 +136,19 @@ struct CaptureFileTests {
         #expect(second.destination.hasSuffix("-2.jsonl"))
     }
 
+    @Test("a symlink to a directory gets a new file in that directory")
+    func symlinkedDirectory() throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let target = directory.appendingPathComponent("captures")
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        let link = directory.appendingPathComponent("latest")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+        let capture = try JSONLCaptureFile(path: link.path, startedAt: start)
+        capture.flush()
+        #expect(capture.destination.hasPrefix(link.path + "/"))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: target.path).count == 1)
+    }
+
     @Test("a path that cannot be opened fails with the path and the reason")
     func unopenable() {
         let path = directory.appendingPathComponent("missing/probe.jsonl").path

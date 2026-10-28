@@ -27,7 +27,8 @@ public struct BLEUUID: Hashable, Comparable, Sendable {
     }
 
     public init(_ uuid: UUID) {
-        self.init(bigEndianBytes: withUnsafeBytes(of: uuid.uuid) { Array($0) })!
+        let b = uuid.uuid
+        self.init(bigEndianBytes: [b.0, b.1, b.2, b.3, b.4, b.5, b.6, b.7, b.8, b.9, b.10, b.11, b.12, b.13, b.14, b.15])!
     }
 
     /// Parses the 2-, 4- or 16-byte big-endian form that `CBUUID.data` and ATT PDUs use.
@@ -75,8 +76,12 @@ public struct BLEUUID: Hashable, Comparable, Sendable {
     }
 
     public var uuid: UUID {
-        var bytes = (0..<16).map { UInt8(truncatingIfNeeded: rawValue >> (8 * (15 - $0))) }
-        return bytes.withUnsafeMutableBytes { $0.load(as: UUID.self) }
+        let byte = { (index: Int) in UInt8(truncatingIfNeeded: rawValue >> (8 * (15 - index))) }
+        return UUID(
+            uuid: (
+                byte(0), byte(1), byte(2), byte(3), byte(4), byte(5), byte(6), byte(7),
+                byte(8), byte(9), byte(10), byte(11), byte(12), byte(13), byte(14), byte(15)
+            ))
     }
 
     public static func < (lhs: BLEUUID, rhs: BLEUUID) -> Bool {

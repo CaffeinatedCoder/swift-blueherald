@@ -112,7 +112,9 @@ public actor StdioServerTransport: Transport {
         var framer = LineFramer()
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
         while !state.isClosed {
-            let count = buffer.withUnsafeMutableBytes { read(descriptor, $0.baseAddress, $0.count) }
+            // read(2) takes a raw pointer; neither the standard library nor System has a Span form.
+            // The pointer lives only for the call and the count bounds it.
+            let count = buffer.withUnsafeMutableBytes { unsafe read(descriptor, $0.baseAddress, $0.count) }
             guard !state.isClosed else { return }
             if count > 0 {
                 let result = framer.append(buffer[..<count])
@@ -137,7 +139,7 @@ public actor StdioServerTransport: Transport {
             case EAGAIN:
                 // Someone else made the shared descriptor non-blocking: wait for data instead of spinning.
                 var request = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
-                _ = poll(&request, 1, -1)
+                _ = unsafe poll(&request, 1, -1)
             case let code:
                 sink.finish(throwing: MCPError.transportError(POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)))
                 return
@@ -148,10 +150,12 @@ public actor StdioServerTransport: Transport {
     // MARK: - Writing (on the write queue)
 
     private static func writeAll(_ data: Data, to descriptor: Int32) -> Result<Void, any Error> {
-        data.withUnsafeBytes { buffer in
+        // System's writeAll would hide how much was written before an EAGAIN, so this stays on
+        // write(2), whose pointer is bounded by the remaining count.
+        unsafe data.withUnsafeBytes { buffer in
             var offset = 0
             while offset < buffer.count {
-                let written = write(descriptor, buffer.baseAddress! + offset, buffer.count - offset)
+                let written = unsafe write(descriptor, buffer.baseAddress! + offset, buffer.count - offset)
                 if written >= 0 {
                     offset += written
                     continue
@@ -162,7 +166,7 @@ public actor StdioServerTransport: Transport {
                 case EAGAIN:
                     // Someone else made the shared descriptor non-blocking: wait until it drains.
                     var request = pollfd(fd: descriptor, events: Int16(POLLOUT), revents: 0)
-                    _ = poll(&request, 1, -1)
+                    _ = unsafe poll(&request, 1, -1)
                 case let code:
                     return .failure(MCPError.transportError(POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)))
                 }
@@ -176,7 +180,7 @@ public actor StdioServerTransport: Transport {
     private static func suppressSIGPIPE(on descriptor: Int32) {
         #if canImport(Darwin)
         var info = stat()
-        guard fstat(descriptor, &info) == 0 else { return }
+        guard unsafe fstat(descriptor, &info) == 0 else { return }
         let type = info.st_mode & S_IFMT
         if type == S_IFIFO || type == S_IFSOCK {
             _ = fcntl(descriptor, F_SETNOSIGPIPE, 1)

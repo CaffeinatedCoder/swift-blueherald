@@ -1,6 +1,6 @@
 #if canImport(CoreBluetooth)
 public import BlueHeraldCore
-@preconcurrency import CoreBluetooth
+import CoreBluetooth
 import Dispatch
 public import Foundation
 
@@ -30,7 +30,8 @@ public actor CoreBluetoothCentral: BLECentral {
     private static let knownPeripheralCapacity = 1024
 
     public nonisolated var unownedExecutor: UnownedSerialExecutor {
-        queue.asUnownedSerialExecutor()
+        // UnownedSerialExecutor does not retain the queue; the actor holds it for its lifetime.
+        unsafe queue.asUnownedSerialExecutor()
     }
 
     public init() {

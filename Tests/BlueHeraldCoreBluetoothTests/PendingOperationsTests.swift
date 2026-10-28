@@ -40,7 +40,7 @@ struct PendingOperationsTests {
             let tokens = AsyncStream.makeStream(of: UInt64.self)
             let result = Task {
                 await withCheckedContinuation { (continuation: OperationContinuation) in
-                    Task { tokens.continuation.yield(await self.enqueue(key, continuation)) }
+                    Task { tokens.continuation.yield(self.enqueue(key, continuation)) }
                 }
             }
             var iterator = tokens.stream.makeAsyncIterator()

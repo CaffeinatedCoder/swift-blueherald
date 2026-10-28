@@ -1,6 +1,6 @@
 #if canImport(CoreBluetooth)
 import BlueHeraldCore
-@preconcurrency import CoreBluetooth
+import CoreBluetooth
 import Foundation
 
 extension BLEUUID {
@@ -103,7 +103,8 @@ extension CBDescriptor {
         case let string as String:
             return Data(string.utf8)
         case let number as NSNumber:
-            return withUnsafeBytes(of: number.uint16Value.littleEndian) { Data($0) }
+            let value = number.uint16Value
+            return Data([UInt8(truncatingIfNeeded: value), UInt8(truncatingIfNeeded: value >> 8)])
         default:
             return Data()
         }
