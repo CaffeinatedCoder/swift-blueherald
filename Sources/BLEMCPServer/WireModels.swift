@@ -461,6 +461,27 @@ struct StatusReport: Encodable {
         let at: Date
     }
 
+    struct BackendReportWire: Encodable {
+        struct Divergence: Encodable {
+            let at: Date
+            let message: String
+        }
+
+        let kind: String
+        let source: String?
+        let matchedRequests: Int
+        let recordedRequests: Int
+        let divergences: [Divergence]
+
+        init(_ report: BackendReport) {
+            kind = report.kind
+            source = report.source
+            matchedRequests = report.matchedRequests
+            recordedRequests = report.recordedRequests
+            divergences = report.divergences.map { Divergence(at: $0.at, message: $0.message) }
+        }
+    }
+
     struct Limits: Encodable {
         let maxConnections: Int
         let maxSubscriptions: Int
@@ -480,6 +501,8 @@ struct StatusReport: Encodable {
     let subscriptions: [SubscriptionReport]
     /// Links a peripheral or the adapter dropped since, newest first; cleared on reconnect.
     let linkLosses: [LinkLossReport]
+    /// Only for a simulated backend: a replay says which capture it plays and how far it got.
+    let backend: BackendReportWire?
 
     init(_ status: SessionStatus) {
         let configuration = status.configuration
@@ -499,5 +522,6 @@ struct StatusReport: Encodable {
         linkLosses = status.linkLosses.map {
             LinkLossReport(peripheralId: $0.peripheral.description, name: $0.name, reason: $0.reason, at: $0.at)
         }
+        backend = status.backend.map(BackendReportWire.init)
     }
 }

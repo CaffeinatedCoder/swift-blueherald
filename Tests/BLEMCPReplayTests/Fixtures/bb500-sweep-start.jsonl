@@ -1,0 +1,40 @@
+{"t": 0.124, "dir": "info", "note": "device 9D290B5A-71BE-5F31-2DB0-81271E936393"}
+{"t": 2.865, "dir": "info", "note": "notify enabled on ff02"}
+{"t": 2.865, "dir": "tx", "uuid": "ff01", "hex": "abcd03fd0278", "note": "auth (known device, FD)"}
+{"t": 3.09, "dir": "rx", "uuid": "ff02", "hex": "abcd04ff00027b"}
+{"t": 3.121, "dir": "info", "note": "authed with auth (known device, FD)"}
+{"t": 5.122, "dir": "tx", "uuid": "ff01", "hex": "abcd0300017b", "note": "serial request (00)"}
+{"t": 5.295, "dir": "rx", "uuid": "ff02", "hex": "abcd04ff00027b"}
+{"t": 5.296, "dir": "rx", "uuid": "ff02", "hex": "abcd1700303031375f3030303030303030303030"}
+{"t": 5.296, "dir": "rx", "uuid": "ff02", "hex": "303139370597"}
+{"t": 5.326, "dir": "tx", "uuid": "ff01", "hex": "abcd04ff00027b", "note": "ack (FF 00)"}
+{"t": 5.326, "dir": "info", "note": "baseline", "select": null}
+{"t": 5.326, "dir": "tx", "uuid": "ff01", "hex": "abcd035e01d9", "note": "live request (5E)"}
+{"t": 5.43, "dir": "rx", "uuid": "ff02", "hex": "abcd1101003020302e30303020205630303003ee"}
+{"t": 5.431, "dir": "rx", "uuid": "ff02", "hex": "abcd0a07140f03110d3b25022d"}
+{"t": 5.628, "dir": "tx", "uuid": "ff01", "hex": "abcd035e01d9", "note": "live request (5E)"}
+{"t": 5.745, "dir": "rx", "uuid": "ff02", "hex": "abcd1101003020302e30303020205630303003ee"}
+{"t": 5.746, "dir": "rx", "uuid": "ff02", "hex": "abcd0a07140f03110d3b25022d"}
+{"t": 5.929, "dir": "tx", "uuid": "ff01", "hex": "abcd035e01d9", "note": "live request (5E)"}
+{"t": 6.061, "dir": "rx", "uuid": "ff02", "hex": "abcd1101003020302e30303020205630303003ee"}
+{"t": 6.063, "dir": "rx", "uuid": "ff02", "hex": "abcd0a07140f03110d3b25022d"}
+{"t": 6.231, "dir": "tx", "uuid": "ff01", "hex": "abcd035e01d9", "note": "live request (5E)"}
+{"t": 6.376, "dir": "rx", "uuid": "ff02", "hex": "abcd1101003020302e30303020205630303003ee"}
+{"t": 6.376, "dir": "rx", "uuid": "ff02", "hex": "abcd0a07140f03110d3b26022e"}
+{"t": 6.532, "dir": "tx", "uuid": "ff01", "hex": "abcd035e01d9", "note": "live request (5E)"}
+{"t": 6.645, "dir": "rx", "uuid": "ff02", "hex": "abcd1101003020302e30303020205630303003ee"}
+{"t": 6.646, "dir": "rx", "uuid": "ff02", "hex": "abcd0a07140f03110d3b26022e"}
+{"t": 6.834, "dir": "tx", "uuid": "ff01", "hex": "abcd035e01d9", "note": "live request (5E)"}
+{"t": 6.961, "dir": "rx", "uuid": "ff02", "hex": "abcd1101003020302e30303020205630303003ee"}
+{"t": 6.962, "dir": "rx", "uuid": "ff02", "hex": "abcd0a07140f03110d3b26022e"}
+{"t": 7.136, "dir": "tx", "uuid": "ff01", "hex": "abcd035e01d9", "note": "live request (5E)"}
+{"t": 7.233, "dir": "rx", "uuid": "ff02", "hex": "abcd110100302d302e3030302020563830300403"}
+{"t": 7.234, "dir": "rx", "uuid": "ff02", "hex": "abcd0a07140f03110d3b26022e"}
+{"t": 7.437, "dir": "tx", "uuid": "ff01", "hex": "abcd035e01d9", "note": "live request (5E)"}
+{"t": 7.546, "dir": "rx", "uuid": "ff02", "hex": "abcd110100302d302e3030302020563830300403"}
+{"t": 7.547, "dir": "rx", "uuid": "ff02", "hex": "abcd0a07140f03110d3b27022f"}
+{"t": 7.739, "dir": "tx", "uuid": "ff01", "hex": "abcd035e01d9", "note": "live request (5E)"}
+{"t": 7.861, "dir": "rx", "uuid": "ff02", "hex": "abcd1101003020302e30303020205630303003ee"}
+{"t": 7.861, "dir": "rx", "uuid": "ff02", "hex": "abcd0a07140f03110d3b27022f"}
+{"t": 8.04, "dir": "tx", "uuid": "ff01", "hex": "abcd035e01d9", "note": "live request (5E)"}
+{"t": 8.176, "dir": "rx", "uuid": "ff02", "hex": "abcd1101003020302e30303020205630303003ee"}

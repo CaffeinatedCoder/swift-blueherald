@@ -14,7 +14,8 @@ enum ConnectionTools {
         description: """
             Reports the Bluetooth adapter state, whether writes are enabled, the server limits, \
             every active scan, connection and subscription, and links that dropped since they were \
-            made. Call it first when something fails.
+            made. When the server replays a recorded capture instead of using Bluetooth, `backend` \
+            says so and lists the calls the capture had no answer for. Call it first when something fails.
             """,
         effect: .readOnly,
         idempotent: true

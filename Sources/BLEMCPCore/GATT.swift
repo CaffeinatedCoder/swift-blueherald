@@ -35,6 +35,12 @@ public struct CharacteristicProperties: OptionSet, Hashable, Sendable {
     public var names: [String] {
         Self.names.compactMap { contains($0.0) ? $0.1 : nil }
     }
+
+    /// The inverse of `names`; names it does not know are skipped.
+    public init(names: some Sequence<String>) {
+        let known = Set(names)
+        self = Self(Self.names.filter { known.contains($0.1) }.map(\.0))
+    }
 }
 
 public struct GATTDescriptor: Hashable, Sendable {

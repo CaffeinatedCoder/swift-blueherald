@@ -26,7 +26,9 @@ public actor BLESession {
     private var subscriptions: [SubscriptionID: Subscription] = [:]
     private var subscriptionsByAddress: [CharacteristicAddress: SubscriptionID] = [:]
     private var waiters: [NotificationWaiter] = []
-    private var knownNames: [PeripheralID: String] = [:]
+    /// Everything scans have seen of each peripheral, merged: names for connections, and the
+    /// advertisement a capture records when the session connects.
+    private var seen: [PeripheralID: DiscoveredPeripheral] = [:]
     private var linkLosses: [PeripheralID: LinkLoss] = [:]
 
     private var lastScanID = 0
@@ -34,7 +36,7 @@ public actor BLESession {
     private var lastSequence: UInt64 = 0
     private var lastWaiterToken: UInt64 = 0
 
-    private static let knownNameCapacity = 4096
+    private static let seenCapacity = 4096
     private static let linkLossCapacity = 64
     private static let finishedScanCapacity = 8
 
@@ -120,7 +122,8 @@ public actor BLESession {
             activeScans: scans.values.filter(\.isActive).map(\.id).sorted(),
             connections: await connectionSnapshots(),
             subscriptions: subscriptions.values.map(\.snapshot).sorted { $0.id < $1.id },
-            linkLosses: linkLosses.values.sorted { $0.at > $1.at })
+            linkLosses: linkLosses.values.sorted { $0.at > $1.at },
+            backend: await central.report())
     }
 
     // MARK: - Scanning
@@ -186,10 +189,11 @@ public actor BLESession {
     }
 
     private func record(_ advertisement: Advertisement, in id: ScanID) {
-        if let name = advertisement.name,
-            knownNames.count < Self.knownNameCapacity || knownNames[advertisement.peripheral] != nil
-        {
-            knownNames[advertisement.peripheral] = name
+        let peripheral = advertisement.peripheral
+        if seen[peripheral] != nil {
+            seen[peripheral]?.merge(advertisement)
+        } else if seen.count < Self.seenCapacity {
+            seen[peripheral] = DiscoveredPeripheral(advertisement)
         }
         guard let reachedTarget = scans[id]?.record(advertisement, limit: configuration.limits.maxPeripheralsPerScan)
         else { return }
@@ -252,7 +256,7 @@ public actor BLESession {
         try await ensurePoweredOn()
         guard connections[id] == nil else { throw .alreadyConnecting(id) }
         try ensureConnectionCapacity()
-        connections[id] = Connection(id: id, name: knownNames[id])
+        connections[id] = Connection(id: id, name: seen[id]?.name)
 
         let central = central
         let peripheral: ConnectedPeripheral
@@ -270,8 +274,11 @@ public actor BLESession {
             await central.disconnect(id)
             throw .disconnected(id, reason: "the connection was closed while it was being established")
         }
-        connections[id]?.markConnected(name: peripheral.name ?? knownNames[id])
+        connections[id]?.markConnected(name: peripheral.name ?? seen[id]?.name)
         linkLosses[id] = nil
+        if let advertised = seen[id] {
+            capture(.advertisement(advertised))
+        }
         capture(.connected(id, name: connections[id]?.name))
         if discover {
             _ = try? await discoverServices(of: id, userDescriptions: userDescriptions)
@@ -353,16 +360,22 @@ public actor BLESession {
     ) async throws(BLEError) -> [GATTService] {
         let connection = try requireConnected(id)
         var services: [GATTService]
+        var isNew = false
         if !refresh, let cached = connection.services {
             services = cached
         } else {
             services = try await discoverAttributeTable(of: id)
+            isNew = true
         }
         if userDescriptions, connections[id]?.hasUserDescriptions == false {
             services = await readingUserDescriptions(of: id, into: services)
             guard connections[id]?.state == .connected else { throw .disconnected(id, reason: nil) }
             connections[id]?.services = services
             connections[id]?.hasUserDescriptions = true
+            isNew = true
+        }
+        if isNew {
+            capture(.discovered(id, services))
         }
         return services
     }

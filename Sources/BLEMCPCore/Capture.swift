@@ -7,7 +7,12 @@ public import Foundation
 /// links coming and going, notifications being switched, and markers the agent placed.
 public struct CaptureEvent: Sendable {
     public enum Kind: Hashable, Sendable {
+        /// What scans last saw of a peripheral, recorded as the session connects to it so a replay
+        /// can advertise the device under test (and only that device).
+        case advertisement(DiscoveredPeripheral)
         case connected(PeripheralID, name: String?)
+        /// The attribute table discovery found, with the 0x2901 names when they were read.
+        case discovered(PeripheralID, [GATTService])
         case disconnected(PeripheralID, reason: String?)
         case notificationsEnabled(CharacteristicAddress, NotificationMode)
         case notificationsDisabled(CharacteristicAddress)

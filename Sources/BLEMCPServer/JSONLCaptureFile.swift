@@ -133,8 +133,24 @@ struct CaptureLine {
     init(_ event: CaptureEvent, since start: Date) {
         append("t", Self.seconds(event.time.timeIntervalSince(start)))
         switch event.kind {
+        case .advertisement(let peripheral):
+            info(
+                note: "advertisement",
+                [
+                    "peripheral": .string(peripheral.id.description), "name": peripheral.name.map(CaptureValue.string),
+                    "rssi": peripheral.rssi.map(CaptureValue.integer), "connectable": peripheral.isConnectable.map(CaptureValue.bool),
+                    "tx_power": peripheral.txPowerLevel.map(CaptureValue.integer),
+                    "manufacturer": peripheral.manufacturerData.map { .string(Hex.encode($0)) },
+                ],
+                json: [
+                    "advertised_services": peripheral.serviceUUIDs.isEmpty ? nil : Self.array(peripheral.serviceUUIDs.map { Self.string(Self.uuid($0)) }),
+                    "service_data": peripheral.serviceData.isEmpty
+                        ? nil : Self.object(peripheral.serviceData.map { (Self.uuid($0.key), Self.string(Hex.encode($0.value))) }.sorted { $0.0 < $1.0 }),
+                ])
         case .connected(let peripheral, let name):
             info(note: "connected", ["peripheral": .string(peripheral.description), "name": name.map(CaptureValue.string)])
+        case .discovered(let peripheral, let services):
+            info(note: "gatt", ["peripheral": .string(peripheral.description)], json: ["services": Self.services(services)])
         case .disconnected(let peripheral, let reason):
             info(note: "disconnected", ["peripheral": .string(peripheral.description), "reason": reason.map(CaptureValue.string)])
         case .notificationsEnabled(let address, let mode):
@@ -171,19 +187,23 @@ struct CaptureLine {
         append("hex", Self.string(Hex.encode(value)))
     }
 
+    /// - Parameter json: Fields already encoded as JSON, for the nested values only replays read;
+    ///   sorted in with `extra`.
     private mutating func info(
         _ characteristic: BLEUUID? = nil,
         _ value: Data? = nil,
         note: String,
-        _ extra: [String: CaptureValue?] = [:]
+        _ extra: [String: CaptureValue?] = [:],
+        json: [String: String?] = [:]
     ) {
         append("dir", Self.string("info"))
         if let characteristic { append("uuid", Self.string(Self.uuid(characteristic))) }
         if let value { append("hex", Self.string(Hex.encode(value))) }
         append("note", Self.string(note))
-        for (key, value) in extra.sorted(by: { $0.key < $1.key }) {
-            guard let value else { continue }
-            append(key, Self.json(value))
+        var encoded = extra.compactMapValues { $0.map(Self.json) }
+        encoded.merge(json.compactMapValues { $0 }) { scalar, _ in scalar }
+        for (key, value) in encoded.sorted(by: { $0.key < $1.key }) {
+            append(key, value)
         }
     }
 
@@ -201,6 +221,42 @@ struct CaptureLine {
         let milliseconds = max(0, Int((interval * 1000).rounded()))
         let fraction = String(milliseconds % 1000)
         return "\(milliseconds / 1000)." + String(repeating: "0", count: 3 - fraction.count) + fraction
+    }
+
+    /// `[{"uuid": "180f", "primary": true, "characteristics": [{"uuid": "2a19", "properties": ["read"],
+    /// "descriptors": ["2902"], "description": "Battery"}]}]`
+    private static func services(_ services: [GATTService]) -> String {
+        array(
+            services.map { service in
+                object([
+                    ("uuid", string(uuid(service.uuid))),
+                    ("primary", service.isPrimary ? "true" : "false"),
+                    (
+                        "characteristics",
+                        array(
+                            service.characteristics.map { characteristic in
+                                var fields = [
+                                    ("uuid", string(uuid(characteristic.uuid))),
+                                    ("properties", array(characteristic.properties.names.map(string))),
+                                    ("descriptors", array(characteristic.descriptors.map { string(uuid($0.uuid)) })),
+                                ]
+                                if let description = characteristic.userDescription {
+                                    fields.append(("description", string(description)))
+                                }
+                                return object(fields)
+                            })
+                    ),
+                ])
+            })
+    }
+
+    private static func array(_ elements: [String]) -> String {
+        "[" + elements.joined(separator: ", ") + "]"
+    }
+
+    /// Keys come out in the given order; `pairs` values are already JSON.
+    private static func object(_ pairs: [(String, String)]) -> String {
+        "{" + pairs.map { "\(string($0.0)): \($0.1)" }.joined(separator: ", ") + "}"
     }
 
     private static func json(_ value: CaptureValue) -> String {

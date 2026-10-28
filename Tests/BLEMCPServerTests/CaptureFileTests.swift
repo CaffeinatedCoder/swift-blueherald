@@ -69,6 +69,43 @@ struct CaptureFileTests {
         }
     }
 
+    @Test("the advertisement and the attribute table get nested rows that replays read and CaptureLog skips")
+    func nestedRows() throws {
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let capture = try JSONLCaptureFile(path: directory.path, startedAt: start)
+        var advertised = DiscoveredPeripheral(
+            Advertisement(
+                peripheral: peripheral, name: "BB-500", rssi: -50, isConnectable: true, serviceUUIDs: [BLEUUID(0xFFF0)],
+                manufacturerData: Data([0x59, 0x00]), serviceData: [BLEUUID(0xFE95): Data([0x01])]))
+        advertised.merge(Advertisement(peripheral: peripheral, rssi: -48))
+        capture.record(at(0.1, .advertisement(advertised)))
+        capture.record(
+            at(
+                0.2,
+                .discovered(
+                    peripheral,
+                    [
+                        GATTService(
+                            uuid: BLEUUID(0xFFF0),
+                            characteristics: [
+                                GATTCharacteristic(
+                                    uuid: BLEUUID(0xFF01), properties: [.write, .writeWithoutResponse],
+                                    descriptors: [GATTDescriptor(uuid: BLEUUID(0x2901))], userDescription: "Data \"in\""),
+                                GATTCharacteristic(uuid: BLEUUID(0xFF02), properties: .notify),
+                            ])
+                    ])))
+        capture.flush()
+        let rows = try lines(of: capture.destination).dropFirst()
+        #expect(
+            Array(rows) == [
+                #"{"t": 0.100, "dir": "info", "note": "advertisement", "advertised_services": ["fff0"], "connectable": true, "manufacturer": "5900", "name": "BB-500", "peripheral": "9D290B5A-71BE-5F31-2DB0-81271E936393", "rssi": -48, "service_data": {"fe95": "01"}}"#,
+                #"{"t": 0.200, "dir": "info", "note": "gatt", "peripheral": "9D290B5A-71BE-5F31-2DB0-81271E936393", "services": [{"uuid": "fff0", "primary": true, "characteristics": [{"uuid": "ff01", "properties": ["write_without_response", "write"], "descriptors": ["2901"], "description": "Data \"in\""}, {"uuid": "ff02", "properties": ["notify"], "descriptors": []}]}]}"#,
+            ])
+        for row in rows {
+            #expect(try JSONSerialization.jsonObject(with: Data(row.utf8)) is [String: Any])
+        }
+    }
+
     @Test("a file is appended to, and each run starts with its own info row")
     func appends() throws {
         defer { try? FileManager.default.removeItem(at: directory) }

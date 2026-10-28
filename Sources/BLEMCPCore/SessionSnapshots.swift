@@ -149,6 +149,8 @@ public struct SessionStatus: Sendable {
     public let subscriptions: [SubscriptionSnapshot]
     /// Links dropped by a peripheral or the adapter that were not re-established, newest first.
     public let linkLosses: [LinkLoss]
+    /// Set when the backend is simulated, for example a replay.
+    public let backend: BackendReport?
 }
 
 /// An established link that went away without being asked to. MCP clients may not show log

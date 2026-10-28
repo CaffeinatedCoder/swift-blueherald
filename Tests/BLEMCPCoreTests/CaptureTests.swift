@@ -37,17 +37,19 @@ struct CaptureTests {
         let receivedAt = Date(timeIntervalSinceNow: -0.25)
         await central.notify(Data([0x01]), from: subscription.address, at: receivedAt)
         let capture = capture
-        try await waitUntil { capture.events.count == 5 }
+        try await waitUntil { capture.events.count == 6 }
         _ = try await session.read(selector(Fixtures.batteryLevel))
         try await session.unsubscribe(subscription.id)
         await session.disconnect(meter.id)
 
         let rx = address(Fixtures.uartRX)
         let tx = address(Fixtures.uartTX)
-        // Discovery read the 0x2901 names; that is bookkeeping, not part of the capture.
+        // Discovery read the 0x2901 names; the reads are bookkeeping, the table with the names is
+        // what a replay needs.
         #expect(
             capture.kinds == [
                 .connected(meter.id, name: "BB-500 Meter"),
+                .discovered(meter.id, Self.describedServices),
                 .notificationsEnabled(tx, .notify),
                 .marker(note: "select AC V", fields: ["select": .string("G"), "expect_mode": .integer(1)]),
                 .write(rx, Data([0xAB, 0xCD]), .withResponse),
@@ -57,7 +59,42 @@ struct CaptureTests {
                 .disconnected(meter.id, reason: "disconnected on request"),
             ])
         // A notification is stamped when it arrived, not when the session got to it.
-        #expect(capture.events[4].time == receivedAt)
+        #expect(capture.events[5].time == receivedAt)
+    }
+
+    /// `Fixtures.services` the way discovery reports them: with the trimmed 0x2901 names.
+    static let describedServices = Fixtures.services.map { service in
+        GATTService(
+            uuid: service.uuid, isPrimary: service.isPrimary,
+            characteristics: service.characteristics.map { characteristic in
+                let names = [Fixtures.batteryLevel: "Battery", Fixtures.uartRX: "Data In", Fixtures.uartTX: "Data Out"]
+                return characteristic.with(userDescription: names[characteristic.uuid])
+            })
+    }
+
+    @Test("connecting records what the scan saw of the device, and the table once per discovery")
+    func advertisementAndTable() async throws {
+        let session = await makeSession()
+        _ = try await session.scan(duration: .milliseconds(50))
+        _ = try await session.connect(meter.id)
+        _ = try await session.connect(meter.id)
+        _ = try await session.discoverServices(of: meter.id)
+
+        let kinds = capture.kinds
+        try #require(kinds.count == 3)
+        guard case .advertisement(let advertised) = kinds[0] else {
+            Issue.record("expected the advertisement first, got \(kinds[0])")
+            return
+        }
+        #expect(advertised.id == meter.id)
+        #expect(advertised.name == "BB-500 Meter")
+        #expect(advertised.serviceUUIDs == [Fixtures.uartService])
+        #expect(advertised.manufacturerData == Data([0x59, 0x00, 0x01]))
+        // The second connect and the cached discovery found nothing new.
+        #expect(Array(kinds.dropFirst()) == [.connected(meter.id, name: "BB-500 Meter"), .discovered(meter.id, Self.describedServices)])
+
+        _ = try await session.discoverServices(of: meter.id, refresh: true)
+        #expect(capture.kinds.last == .discovered(meter.id, Self.describedServices))
     }
 
     @Test("a failed write follows its tx row; a refused one never gets a row")
@@ -72,7 +109,7 @@ struct CaptureTests {
             try await session.write(Data([0x02]), to: selector(Fixtures.batteryLevel))
         }
         #expect(
-            capture.kinds.dropFirst() == [
+            capture.kinds.dropFirst(2) == [
                 .write(address(Fixtures.uartRX), Data([0x01]), .withResponse),
                 .writeFailed(address(Fixtures.uartRX), descriptor: nil, .backendFailure("boom")),
             ])
@@ -84,14 +121,16 @@ struct CaptureTests {
         _ = try await session.connect(meter.id)
         await central.dropLink(to: meter.id, reason: "connection timeout")
         let capture = capture
-        try await waitUntil { capture.events.count == 2 }
+        try await waitUntil { capture.events.count == 3 }
         _ = try await session.connect(meter.id)
         await session.shutdown()
         #expect(
             capture.kinds == [
                 .connected(meter.id, name: "BB-500 Meter"),
+                .discovered(meter.id, Self.describedServices),
                 .disconnected(meter.id, reason: "connection timeout"),
                 .connected(meter.id, name: "BB-500 Meter"),
+                .discovered(meter.id, Self.describedServices),
                 .disconnected(meter.id, reason: "server shutting down"),
             ])
     }

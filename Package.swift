@@ -4,6 +4,7 @@ import PackageDescription
 // Layers, from the bottom up:
 //   BLEMCPCore           domain model, the BLECentral backend protocol and the BLESession actor; no platform I/O
 //   BLEMCPCoreBluetooth  the Apple backend: a CBCentralManager bridged into an actor running on its own queue
+//   BLEMCPReplay         the offline backend: plays a JSONL capture through the same seam; also diffs captures
 //   BLEMCPServer         the MCP adapter: configuration, JSON schemas, tool registry and the tool catalogue
 //   ble-mcp              composition root: reads the environment, wires the backend and serves over stdio
 //
@@ -27,6 +28,7 @@ let package = Package(
         .executable(name: "ble-mcp", targets: ["ble-mcp"]),
         .library(name: "BLEMCPCore", targets: ["BLEMCPCore"]),
         .library(name: "BLEMCPCoreBluetooth", targets: ["BLEMCPCoreBluetooth"]),
+        .library(name: "BLEMCPReplay", targets: ["BLEMCPReplay"]),
         .library(name: "BLEMCPServer", targets: ["BLEMCPServer"]),
     ],
     dependencies: [
@@ -44,6 +46,11 @@ let package = Package(
             swiftSettings: strictSettings
         ),
         .target(
+            name: "BLEMCPReplay",
+            dependencies: ["BLEMCPCore"],
+            swiftSettings: strictSettings
+        ),
+        .target(
             name: "BLEMCPServer",
             dependencies: [
                 "BLEMCPCore",
@@ -57,6 +64,7 @@ let package = Package(
             dependencies: [
                 "BLEMCPCore",
                 "BLEMCPCoreBluetooth",
+                "BLEMCPReplay",
                 "BLEMCPServer",
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "Logging", package: "swift-log"),
@@ -90,6 +98,17 @@ let package = Package(
             // Conversions only: nothing here creates a CBCentralManager or touches the radio.
             name: "BLEMCPCoreBluetoothTests",
             dependencies: ["BLEMCPCore", "BLEMCPCoreBluetooth"],
+            swiftSettings: strictSettings
+        ),
+        .testTarget(
+            name: "BLEMCPReplayTests",
+            dependencies: [
+                "BLEMCPCore",
+                "BLEMCPReplay",
+                "BLEMCPServer",
+                "BLEMCPTestSupport",
+            ],
+            resources: [.copy("Fixtures")],
             swiftSettings: strictSettings
         ),
         .testTarget(

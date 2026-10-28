@@ -219,13 +219,17 @@ public actor FakeCentral: BLECentral {
         _ = try device(address.peripheral)
         devices[address.peripheral]?.values[address.characteristic] = value
         writes.append(Write(address: address, descriptor: nil, value: value, mode: mode))
-        for (replyAddress, reply) in responder?(address, value) ?? [] {
-            if responseDelay == .zero {
+        let replies = responder?(address, value) ?? []
+        if responseDelay == .zero {
+            for (replyAddress, reply) in replies {
                 notify(reply, from: replyAddress)
-            } else {
-                let delay = responseDelay
-                Task {
-                    try? await Task.sleep(for: delay)
+            }
+        } else {
+            // One task for all of them: a task per reply would let them overtake each other.
+            let delay = responseDelay
+            Task {
+                try? await Task.sleep(for: delay)
+                for (replyAddress, reply) in replies {
                     notify(reply, from: replyAddress)
                 }
             }

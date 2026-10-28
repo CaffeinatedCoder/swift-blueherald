@@ -13,17 +13,36 @@ public struct ServerConfiguration: Sendable, Equatable {
     /// Relaunch as our own responsible process so macOS asks for Bluetooth access on behalf of
     /// ble-mcp rather than the launching app (macOS only).
     public let disclaimResponsibility: Bool
+    /// Play a capture instead of using Bluetooth.
+    public let replay: Replay?
+
+    /// Where a replay comes from and how it plays.
+    public struct Replay: Sendable, Equatable {
+        public let path: String
+        /// 1 is recorded pace, 0 sends replies without delay.
+        public let speed: Double
+        /// Fail writes the capture does not make next.
+        public let isStrict: Bool
+
+        public init(path: String, speed: Double = 1, isStrict: Bool = false) {
+            self.path = path
+            self.speed = speed
+            self.isStrict = isStrict
+        }
+    }
 
     public init(
         session: SessionConfiguration = SessionConfiguration(),
         logLevel: Logger.Level = .warning,
         capturePath: String? = nil,
-        disclaimResponsibility: Bool = true
+        disclaimResponsibility: Bool = true,
+        replay: Replay? = nil
     ) {
         self.session = session
         self.logLevel = logLevel
         self.capturePath = capturePath
         self.disclaimResponsibility = disclaimResponsibility
+        self.replay = replay
     }
 
     /// - Parameter readFile: Reads files named by `*_FILE` variables; defaults to UTF-8 file reads,
@@ -56,6 +75,13 @@ public struct ServerConfiguration: Sendable, Equatable {
         logLevel = try reader.logLevel("BLE_MCP_LOG_LEVEL") ?? .warning
         capturePath = reader.string("BLE_MCP_CAPTURE")
         disclaimResponsibility = try reader.bool("BLE_MCP_OWN_PERMISSION") ?? true
+        let speed = try reader.number("BLE_MCP_REPLAY_SPEED", in: 0...1_000)
+        let isStrict = try reader.bool("BLE_MCP_REPLAY_STRICT")
+        if let path = reader.string("BLE_MCP_REPLAY") {
+            replay = Replay(path: path, speed: speed ?? 1, isStrict: isStrict ?? false)
+        } else {
+            replay = nil
+        }
     }
 
     /// Every variable the server reads, for `--help`.
@@ -74,6 +100,9 @@ public struct ServerConfiguration: Sendable, Equatable {
         ("BLE_MCP_CAPTURE", "record writes, notifications and reads as JSONL: a directory gets one file per run, a file is appended to"),
         ("BLE_MCP_LOG_LEVEL", "trace, debug, info, notice, warning, error or critical; logs go to stderr (default: warning)"),
         ("BLE_MCP_OWN_PERMISSION", "0 makes macOS attribute Bluetooth access to the launching app instead of ble-mcp (default: 1)"),
+        ("BLE_MCP_REPLAY", "play this JSONL capture instead of using Bluetooth; writes still need BLE_MCP_ALLOW_WRITES"),
+        ("BLE_MCP_REPLAY_SPEED", "replay pace: 1 as recorded, 2 twice as fast, 0 without delays (default: 1)"),
+        ("BLE_MCP_REPLAY_STRICT", "1 fails writes the capture does not make next, instead of accepting them without a reply"),
     ]
 }
 
@@ -118,6 +147,14 @@ private struct EnvironmentReader {
             throw ConfigurationError(variable: name, value: value, expected: "an integer from \(range.lowerBound) to \(range.upperBound)")
         }
         return int
+    }
+
+    func number(_ name: String, in range: ClosedRange<Double>) throws(ConfigurationError) -> Double? {
+        guard let value = raw(name) else { return nil }
+        guard let number = Double(value), range.contains(number) else {
+            throw ConfigurationError(variable: name, value: value, expected: "a number from \(Int(range.lowerBound)) to \(Int(range.upperBound))")
+        }
+        return number
     }
 
     func milliseconds(_ name: String) throws(ConfigurationError) -> Duration? {

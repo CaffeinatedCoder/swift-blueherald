@@ -84,4 +84,43 @@ public protocol BLECentral: Sendable {
 
     /// The largest value one write can carry, which depends on the negotiated ATT MTU.
     func maximumWriteLength(for peripheral: PeripheralID, mode: WriteMode) async throws(BLEError) -> Int
+
+    /// What a backend that is not a radio wants `ble_status` to show; `nil` for a real adapter.
+    func report() async -> BackendReport?
+}
+
+extension BLECentral {
+    public func report() async -> BackendReport? { nil }
+}
+
+/// The state of a simulated backend, such as a replay: where its script came from, how far the
+/// session's calls have followed it, and where they left it.
+public struct BackendReport: Hashable, Sendable {
+    public struct Divergence: Hashable, Sendable {
+        public let at: Date
+        public let message: String
+
+        public init(at: Date, message: String) {
+            self.at = at
+            self.message = message
+        }
+    }
+
+    /// What the backend is, e.g. `replay`.
+    public let kind: String
+    /// The file it plays, if any.
+    public let source: String?
+    /// Recorded requests (writes and subscriptions) the session's calls have matched.
+    public let matchedRequests: Int
+    public let recordedRequests: Int
+    /// Calls the script had no recorded answer for, oldest first.
+    public let divergences: [Divergence]
+
+    public init(kind: String, source: String?, matchedRequests: Int, recordedRequests: Int, divergences: [Divergence]) {
+        self.kind = kind
+        self.source = source
+        self.matchedRequests = matchedRequests
+        self.recordedRequests = recordedRequests
+        self.divergences = divergences
+    }
 }

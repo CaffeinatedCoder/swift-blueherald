@@ -1,4 +1,5 @@
 import BLEMCPCore
+import BLEMCPReplay
 import BLEMCPServer
 import Dispatch
 import Foundation
@@ -9,11 +10,15 @@ import MCP
 import BLEMCPCoreBluetooth
 #endif
 
-/// Composition root: reads the environment, wires the CoreBluetooth backend into a session and
-/// serves it over stdio. stdout carries the MCP protocol, so everything else goes to stderr.
+/// Composition root: reads the environment, wires the CoreBluetooth backend (or a replay) into a
+/// session and serves it over stdio. stdout carries the MCP protocol, so everything else goes to
+/// stderr. `ble-mcp diff` compares two captures instead.
 @main
 enum BLEMCPCommand {
     static func main() async {
+        if CommandLine.arguments.dropFirst().first == "diff" {
+            exit(DiffCommand.run(Array(CommandLine.arguments.dropFirst(2))))
+        }
         let arguments = Set(CommandLine.arguments.dropFirst())
         if arguments.contains("--version") {
             print("\(BLEMCPServer.name) \(BLEMCPServer.version)")
@@ -35,7 +40,8 @@ enum BLEMCPCommand {
         }
 
         #if os(macOS)
-        if configuration.disclaimResponsibility {
+        // A replay never touches Bluetooth, so there is no permission to attribute.
+        if configuration.disclaimResponsibility, configuration.replay == nil {
             ResponsibilityDisclaimer.relaunchDisclaimedIfNeeded()
         }
         #endif
@@ -47,7 +53,22 @@ enum BLEMCPCommand {
         }
         let logger = Logger(label: BLEMCPServer.name)
 
-        #if canImport(CoreBluetooth)
+        let central: any BLECentral
+        if let replay = configuration.replay {
+            do {
+                let recording = try CaptureRecording(contentsOf: replay.path)
+                central = ReplayCentral(recording, options: ReplayCentral.Options(speed: replay.speed, isStrict: replay.isStrict))
+            } catch {
+                fail(error.description, status: EX_NOINPUT)
+            }
+        } else {
+            #if canImport(CoreBluetooth)
+            central = CoreBluetoothCentral()
+            #else
+            fail("ble-mcp needs CoreBluetooth; on this platform it can only play captures (BLE_MCP_REPLAY).", status: EXIT_FAILURE)
+            #endif
+        }
+
         let capture: JSONLCaptureFile?
         do {
             capture = try configuration.capturePath.map { (path: String) throws(CaptureFileError) in
@@ -56,7 +77,7 @@ enum BLEMCPCommand {
         } catch {
             fail(error.description, status: EX_CANTCREAT)
         }
-        let session = BLESession(central: CoreBluetoothCentral(), configuration: configuration.session, capture: capture)
+        let session = BLESession(central: central, configuration: configuration.session, capture: capture)
         let server = BLEMCPServer(session: session, logger: logger)
 
         // On SIGINT/SIGTERM, release scans and links before exiting; the controller would
@@ -73,6 +94,7 @@ enum BLEMCPCommand {
                 "version": "\(BLEMCPServer.version)",
                 "writes": "\(configuration.session.writePolicy.isEnabled)",
                 "capture": "\(capture?.destination ?? "off")",
+                "replay": "\(configuration.replay?.path ?? "off")",
             ])
         do {
             try await server.run(on: StdioServerTransport(logger: logger))
@@ -85,9 +107,6 @@ enum BLEMCPCommand {
         // `run` has shut the session down; its last capture rows may still be queued.
         capture?.flush()
         withExtendedLifetime(signalSources) {}
-        #else
-        fail("ble-mcp needs CoreBluetooth; no Bluetooth backend exists for this platform yet.", status: EXIT_FAILURE)
-        #endif
     }
 
     /// Runs `shutdown` once SIGINT or SIGTERM arrives. Keep the returned sources alive.
@@ -127,6 +146,11 @@ enum BLEMCPCommand {
             Options:
               --help, -h    Show this help.
               --version     Print the version.
+
+            Comparing captures:
+              \(BLEMCPServer.name) diff LEFT.jsonl RIGHT.jsonl [--kinds tx,rx,read] [--limit N]
+                            Compares writes, notifications and reads, ignoring timing.
+                            Exits 0 when they match, 1 when they differ, 2 on errors.
 
             Environment:
             \(variables)
