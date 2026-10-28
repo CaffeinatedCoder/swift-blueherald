@@ -148,7 +148,8 @@ public actor ReplayCentral: BLECentral {
                 !used.contains(index) && script.triggers[index].peripheral == peripheral && script.triggers[index].request.isWrite
             }
             guard let next, script.triggers[next].request == request, script.triggers[next].isIn(characteristic.service) else {
-                let expected = next.map { "the next recorded write is \(describe(script.triggers[$0].request)) (line \(script.triggers[$0].line))" }
+                let expected =
+                    next.map { "the next recorded write is \(describe(script.triggers[$0].request)) (line \(script.triggers[$0].line))" }
                     ?? "the capture has no writes left"
                 let message = "Strict replay: \(describe(request)) is not what the capture does next; \(expected)."
                 diverge(message)

@@ -15,7 +15,9 @@ struct SessionRaceTests {
         central = FakeCentral(devices: [meter])
     }
 
-    var tx: CharacteristicAddress { CharacteristicAddress(peripheral: meter.id, service: Fixtures.uartService, characteristic: Fixtures.uartTX) }
+    var tx: CharacteristicAddress {
+        CharacteristicAddress(peripheral: meter.id, service: Fixtures.uartService, characteristic: Fixtures.uartTX)
+    }
 
     func selector(_ characteristic: BLEUUID) -> CharacteristicSelector {
         CharacteristicSelector(peripheral: meter.id, service: nil, characteristic: characteristic)

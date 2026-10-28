@@ -36,7 +36,9 @@ struct CaptureFileTests {
             at(2.865, .notificationsEnabled(address(BLEUUID(0xFF02)), .notify)),
             at(2.865, .write(address(BLEUUID(0xFF01)), Data([0xAB, 0xCD, 0x03, 0xFD, 0x02, 0x78]), .withResponse)),
             at(3.09, .notification(address(BLEUUID(0xFF02)), Data([0xAB, 0xCD, 0x04, 0xFF, 0x00, 0x02, 0x7B]))),
-            at(9.328, .marker(note: "select AC V", fields: ["select": .string("G"), "expect_mode": .integer(1), "hex": .string("dropped")])),
+            at(
+                9.328,
+                .marker(note: "select AC V", fields: ["select": .string("G"), "expect_mode": .integer(1), "hex": .string("dropped")])),
             at(10, .read(address(uart, service: Fixtures.uartService), Data())),
             at(11.5, .writeFailed(address(BLEUUID(0xFF01)), descriptor: nil, .disconnected(peripheral, reason: nil))),
             at(12, .marker(note: "quote \" and\nnewline", fields: ["ok": .bool(true), "ratio": .number(0.5), "marker": .bool(false)])),
@@ -119,7 +121,10 @@ struct CaptureFileTests {
         #expect(rows.count == 3)
         #expect(rows[0].contains("earlier run"))
         #expect(rows[1].contains("capture started"))
-        #expect(rows[2] == #"{"t": 1.000, "dir": "rx", "uuid": "ff02", "hex": "01", "peripheral": "9D290B5A-71BE-5F31-2DB0-81271E936393", "service": "ff00"}"#)
+        #expect(
+            rows[2]
+                == #"{"t": 1.000, "dir": "rx", "uuid": "ff02", "hex": "01", "peripheral": "9D290B5A-71BE-5F31-2DB0-81271E936393", "service": "ff00"}"#
+        )
     }
 
     @Test("two runs started in the same second get separate files")

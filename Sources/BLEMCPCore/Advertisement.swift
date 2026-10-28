@@ -132,8 +132,9 @@ public struct ScanFilter: Hashable, Sendable {
             else { return false }
         }
         if !serviceUUIDs.isEmpty {
-            guard peripheral.serviceUUIDs.contains(where: serviceUUIDs.contains)
-                || peripheral.serviceData.keys.contains(where: serviceUUIDs.contains)
+            guard
+                peripheral.serviceUUIDs.contains(where: serviceUUIDs.contains)
+                    || peripheral.serviceData.keys.contains(where: serviceUUIDs.contains)
             else { return false }
         }
         if let minimumRSSI {

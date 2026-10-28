@@ -21,7 +21,9 @@ struct ArgumentTests {
         #expect(try arguments(["duration_ms": value])[Self.duration] == 2_500)
     }
 
-    @Test("fractional and out-of-range integers are rejected", arguments: [Value.double(2_500.5), .int(99), .string("lots"), .double(.infinity)])
+    @Test(
+        "fractional and out-of-range integers are rejected",
+        arguments: [Value.double(2_500.5), .int(99), .string("lots"), .double(.infinity)])
     func strictIntegers(value: Value) throws {
         #expect(throws: ToolError.self) {
             try arguments(["duration_ms": value])[Self.duration]
@@ -112,7 +114,9 @@ struct ServerConfigurationTests {
         #expect(!configuration.disclaimResponsibility)
         #expect(configuration.capturePath == "~/captures")
         let session = configuration.session
-        #expect(session.writePolicy == WritePolicy(isEnabled: true, allowlist: [BLEUUID(0x2A19), BLEUUID("6E400002-B5A3-F393-E0A9-E50E24DCCA9E")!]))
+        #expect(
+            session.writePolicy
+                == WritePolicy(isEnabled: true, allowlist: [BLEUUID(0x2A19), BLEUUID("6E400002-B5A3-F393-E0A9-E50E24DCCA9E")!]))
         #expect(session.limits == SessionLimits(maxConnections: 2, maxSubscriptions: 8, maxScans: 1, notificationBufferCapacity: 64))
         #expect(session.timeouts.connect == .milliseconds(3_000))
         #expect(session.timeouts.operation == .milliseconds(1_500))

@@ -51,8 +51,12 @@ struct CaptureFormatTests {
         let b = Fixtures.meter()
         let device = FakeCentral(devices: [a, b])
         await device.setResponder(delay: .milliseconds(20)) { address, frame in
-            [(CharacteristicAddress(peripheral: address.peripheral, service: Fixtures.uartService, characteristic: Fixtures.uartTX),
-              Data([address.peripheral == a.id ? 0xA0 : 0xB0]) + frame)]
+            [
+                (
+                    CharacteristicAddress(peripheral: address.peripheral, service: Fixtures.uartService, characteristic: Fixtures.uartTX),
+                    Data([address.peripheral == a.id ? 0xA0 : 0xB0]) + frame
+                )
+            ]
         }
         // Both are connected; A is connected first, so for the old format B was the device "last mentioned".
         func exchange(on central: some BLECentral, capture: (any CaptureSink)?) async throws -> [Data?] {
@@ -101,13 +105,15 @@ struct CaptureFormatTests {
 
         // Two services with the same UUIDs: the reply recorded for one is not played for the other.
         let replies = path("replies.jsonl")
-        try capture(replies, [
-            at(0.1, .connected(peripheral, name: nil)),
-            at(0.2, .notificationsEnabled(address(BLEUUID(0xFF02), service: BLEUUID(0xFF00)), .notify)),
-            at(0.3, .notificationsEnabled(address(BLEUUID(0xFF02), service: BLEUUID(0xFE00)), .notify)),
-            at(1, .write(address(BLEUUID(0xFF01), service: BLEUUID(0xFF00)), Data([0x01]), .withResponse)),
-            at(1.1, .notification(address(BLEUUID(0xFF02), service: BLEUUID(0xFF00)), Data([0xAA]))),
-        ])
+        try capture(
+            replies,
+            [
+                at(0.1, .connected(peripheral, name: nil)),
+                at(0.2, .notificationsEnabled(address(BLEUUID(0xFF02), service: BLEUUID(0xFF00)), .notify)),
+                at(0.3, .notificationsEnabled(address(BLEUUID(0xFF02), service: BLEUUID(0xFE00)), .notify)),
+                at(1, .write(address(BLEUUID(0xFF01), service: BLEUUID(0xFF00)), Data([0x01]), .withResponse)),
+                at(1.1, .notification(address(BLEUUID(0xFF02), service: BLEUUID(0xFF00)), Data([0xAA]))),
+            ])
         let script = ReplayScript(try CaptureRecording(contentsOf: replies))
         #expect(script.devices.only?.services.map(\.uuid) == [BLEUUID(0xFF00), BLEUUID(0xFE00)])
         #expect(script.triggers.last?.service == BLEUUID(0xFF00))
@@ -119,16 +125,20 @@ struct CaptureFormatTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let path = path("appended.jsonl")
         // Run 1 is killed after a write that got no reply: no disconnected row.
-        try capture(path, [
-            at(0.1, .connected(peripheral, name: "BB-500")),
-            at(5, .write(address(BLEUUID(0xFF01)), Data([0x01]), .withResponse)),
-        ])
+        try capture(
+            path,
+            [
+                at(0.1, .connected(peripheral, name: "BB-500")),
+                at(5, .write(address(BLEUUID(0xFF01)), Data([0x01]), .withResponse)),
+            ])
         // Run 2, an hour later, starts mid-stream with a notification.
         let later = start.addingTimeInterval(3600)
-        try capture(path, startedAt: later, [
-            at(0.1, .connected(peripheral, name: "BB-500"), from: later),
-            at(0.5, .notification(address(BLEUUID(0xFF02)), Data([0x02])), from: later),
-        ])
+        try capture(
+            path, startedAt: later,
+            [
+                at(0.1, .connected(peripheral, name: "BB-500"), from: later),
+                at(0.5, .notification(address(BLEUUID(0xFF02)), Data([0x02])), from: later),
+            ])
         let script = ReplayScript(try CaptureRecording(contentsOf: path))
         #expect(script.triggers.map(\.request) == [.write(BLEUUID(0xFF01), Data([0x01])), .subscribe(BLEUUID(0xFF02))])
         #expect(script.triggers.first?.replies.isEmpty == true, "run 2's notification became run 1's reply")
@@ -139,10 +149,12 @@ struct CaptureFormatTests {
     func truncatedLastLine() throws {
         defer { try? FileManager.default.removeItem(at: directory) }
         let path = path("cut.jsonl")
-        try capture(path, [
-            at(1, .write(address(BLEUUID(0xFF01)), Data([0x01]), .withResponse)),
-            at(2, .notification(address(BLEUUID(0xFF02)), Data([0x02]))),
-        ])
+        try capture(
+            path,
+            [
+                at(1, .write(address(BLEUUID(0xFF01)), Data([0x01]), .withResponse)),
+                at(2, .notification(address(BLEUUID(0xFF02)), Data([0x02]))),
+            ])
         try append(Data(#"{"t": 3.000, "dir": "rx", "uu"#.utf8), to: path)
         let recording = try CaptureRecording(contentsOf: path)
         #expect(recording.rows.count == 3)
@@ -173,7 +185,9 @@ struct CaptureFormatTests {
 
     @Test("CRLF line endings load as separate rows")
     func crlf() throws {
-        let text = #"{"t": 0.000, "dir": "tx", "uuid": "ff01", "hex": "01"}"# + "\r\n" + #"{"t": 0.100, "dir": "rx", "uuid": "ff02", "hex": "02"}"# + "\r\n"
+        let text =
+            #"{"t": 0.000, "dir": "tx", "uuid": "ff01", "hex": "01"}"# + "\r\n" + #"{"t": 0.100, "dir": "rx", "uuid": "ff02", "hex": "02"}"#
+            + "\r\n"
         let recording = try CaptureRecording(jsonl: text)
         #expect(recording.rows.map(\.meaning) == [.write(BLEUUID(0xFF01), Data([1]), nil), .notification(BLEUUID(0xFF02), Data([2]))])
         #expect(recording.warnings.isEmpty)
@@ -183,14 +197,16 @@ struct CaptureFormatTests {
     func markersAreNotEvents() throws {
         defer { try? FileManager.default.removeItem(at: directory) }
         let path = path("marker.jsonl")
-        try capture(path, [
-            at(0.1, .connected(peripheral, name: "BB-500")),
-            at(1, .write(address(BLEUUID(0xFF01)), Data([0x01]), .withResponse)),
-            at(1.1, .marker(note: "disconnected", fields: ["reason": .string("battery pulled for step 3")])),
-            at(1.2, .marker(note: "capture started", fields: [:])),
-            at(1.3, .marker(note: "notify enabled on ff03", fields: [:])),
-            at(2, .notification(address(BLEUUID(0xFF02)), Data([0x02]))),
-        ])
+        try capture(
+            path,
+            [
+                at(0.1, .connected(peripheral, name: "BB-500")),
+                at(1, .write(address(BLEUUID(0xFF01)), Data([0x01]), .withResponse)),
+                at(1.1, .marker(note: "disconnected", fields: ["reason": .string("battery pulled for step 3")])),
+                at(1.2, .marker(note: "capture started", fields: [:])),
+                at(1.3, .marker(note: "notify enabled on ff03", fields: [:])),
+                at(2, .notification(address(BLEUUID(0xFF02)), Data([0x02]))),
+            ])
         let recording = try CaptureRecording(contentsOf: path)
         #expect(recording.rows.filter(\.isMarker).map(\.meaning) == [.other, .other, .other])
         let script = ReplayScript(recording)
@@ -202,10 +218,12 @@ struct CaptureFormatTests {
     func advertisedName() async throws {
         defer { try? FileManager.default.removeItem(at: directory) }
         let path = path("names.jsonl")
-        try capture(path, [
-            at(0.1, .advertisement(DiscoveredPeripheral(Advertisement(peripheral: peripheral, name: "BLEMCP-Test", rssi: -50)))),
-            at(0.2, .connected(peripheral, name: "iPhone")),
-        ])
+        try capture(
+            path,
+            [
+                at(0.1, .advertisement(DiscoveredPeripheral(Advertisement(peripheral: peripheral, name: "BLEMCP-Test", rssi: -50)))),
+                at(0.2, .connected(peripheral, name: "iPhone")),
+            ])
         let central = ReplayCentral(try CaptureRecording(contentsOf: path), options: ReplayCentral.Options(speed: 0))
         let session = BLESession(central: central)
         await session.start()

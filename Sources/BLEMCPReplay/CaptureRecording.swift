@@ -54,7 +54,9 @@ public struct CaptureRecording: Sendable {
                 guard offset == lines.count - 1 else {
                     throw CaptureReadError(source: source, line: offset + 1, reason: "not a JSON object")
                 }
-                warnings.append("Line \(offset + 1) was left out: it ends without a newline and is not a JSON object, as when a capture is cut off mid-write.")
+                warnings.append(
+                    "Line \(offset + 1) was left out: it ends without a newline and is not a JSON object, as when a capture is cut off mid-write."
+                )
             }
         }
         self.init(rows: rows, source: source, warnings: warnings)

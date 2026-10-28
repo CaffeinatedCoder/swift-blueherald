@@ -452,7 +452,8 @@ public actor BLESession {
         }
         capture(.read(address, value))
         return CharacteristicValue(
-            address: address, userDescription: target.characteristic.userDescription, properties: target.characteristic.properties, value: value, readAt: .now)
+            address: address, userDescription: target.characteristic.userDescription, properties: target.characteristic.properties,
+            value: value, readAt: .now)
     }
 
     /// Writes `value`. Without an explicit mode, characteristics that acknowledge writes get an

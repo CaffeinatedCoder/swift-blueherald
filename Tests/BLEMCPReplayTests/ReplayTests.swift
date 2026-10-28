@@ -14,7 +14,9 @@ enum BB500 {
     static let serialRequest = Data([0xAB, 0xCD, 0x03, 0x00, 0x01, 0x7B])
     static let liveRequest = Data([0xAB, 0xCD, 0x03, 0x5E, 0x01, 0xD9])
     /// The clock frame each live reply ends with; its seconds byte ticks during the recording.
-    static let clocks = ["abcd0a07140f03110d3b25022d", "abcd0a07140f03110d3b25022d", "abcd0a07140f03110d3b25022d", "abcd0a07140f03110d3b26022e"]
+    static let clocks = [
+        "abcd0a07140f03110d3b25022d", "abcd0a07140f03110d3b25022d", "abcd0a07140f03110d3b25022d", "abcd0a07140f03110d3b26022e",
+    ]
 
     static func recording() throws -> CaptureRecording {
         let url = try #require(Bundle.module.url(forResource: "bb500-sweep-start", withExtension: "jsonl", subdirectory: "Fixtures"))
@@ -34,7 +36,8 @@ func replaySession(
     capture: (any CaptureSink)? = nil
 ) async throws -> (BLESession, ReplayCentral) {
     let central = ReplayCentral(recording, options: options)
-    let session = BLESession(central: central, configuration: SessionConfiguration(writePolicy: WritePolicy(isEnabled: true)), capture: capture)
+    let session = BLESession(
+        central: central, configuration: SessionConfiguration(writePolicy: WritePolicy(isEnabled: true)), capture: capture)
     await session.start()
     _ = try await session.connect(peripheral)
     return (session, central)
@@ -70,11 +73,12 @@ struct CaptureLoadingTests {
 
     @Test("a field of an unexpected type is dropped, a line that is not an object fails with its number")
     func leniency() throws {
-        let recording = try CaptureRecording(jsonl: #"""
-            {"t": "soon", "dir": "tx", "uuid": "ff01", "hex": "0102", "rssi": "strong", "mode": 7}
+        let recording = try CaptureRecording(
+            jsonl: #"""
+                {"t": "soon", "dir": "tx", "uuid": "ff01", "hex": "0102", "rssi": "strong", "mode": 7}
 
-            {"t": 1.5, "dir": "sideways", "note": "read", "uuid": "2a19", "hex": "57"}
-            """#)
+                {"t": 1.5, "dir": "sideways", "note": "read", "uuid": "2a19", "hex": "57"}
+                """#)
         #expect(recording.rows.map(\.line) == [1, 3])
         #expect(recording.rows[0].meaning == .write(BLEUUID(0xFF01), Data([1, 2]), nil))
         #expect(recording.rows[0].time == 0)
@@ -127,7 +131,9 @@ struct ReplayScriptTests {
     @Test("a capture that names no device is played as one inferred peripheral")
     func anonymous() throws {
         let script = ReplayScript(
-            try CaptureRecording(jsonl: #"{"t": 1, "dir": "tx", "uuid": "ff01", "hex": "01"}"# + "\n" + #"{"t": 1.2, "dir": "rx", "uuid": "ff02", "hex": "02"}"#))
+            try CaptureRecording(
+                jsonl: #"{"t": 1, "dir": "tx", "uuid": "ff01", "hex": "01"}"# + "\n"
+                    + #"{"t": 1.2, "dir": "rx", "uuid": "ff02", "hex": "02"}"#))
         #expect(script.devices.map(\.id) == [ReplayScript.inferredPeripheral])
         #expect(script.triggers.only?.replies.only?.reply == .notification(BLEUUID(0xFF02), Data([2])))
     }
@@ -135,7 +141,9 @@ struct ReplayScriptTests {
     @Test("notifications before any request are played when the agent subscribes")
     func leadingNotifications() throws {
         let script = ReplayScript(
-            try CaptureRecording(jsonl: #"{"t": 1, "dir": "rx", "uuid": "ff02", "hex": "01"}"# + "\n" + #"{"t": 2, "dir": "rx", "uuid": "ff02", "hex": "02"}"#))
+            try CaptureRecording(
+                jsonl: #"{"t": 1, "dir": "rx", "uuid": "ff02", "hex": "01"}"# + "\n"
+                    + #"{"t": 2, "dir": "rx", "uuid": "ff02", "hex": "02"}"#))
         let trigger = try #require(script.triggers.only)
         #expect(trigger.request == .subscribe(BLEUUID(0xFF02)))
         #expect(trigger.replies.map(\.delay) == [0, 1])
@@ -211,11 +219,12 @@ struct ReplayCentralTests {
 
     @Test("replies keep their recorded delays, scaled by the speed")
     func pacing() async throws {
-        let recording = try CaptureRecording(jsonl: """
-            {"t": 0, "dir": "info", "note": "notify enabled on ff02"}
-            {"t": 1, "dir": "tx", "uuid": "ff01", "hex": "01"}
-            {"t": 1.4, "dir": "rx", "uuid": "ff02", "hex": "02"}
-            """)
+        let recording = try CaptureRecording(
+            jsonl: """
+                {"t": 0, "dir": "info", "note": "notify enabled on ff02"}
+                {"t": 1, "dir": "tx", "uuid": "ff01", "hex": "01"}
+                {"t": 1.4, "dir": "rx", "uuid": "ff02", "hex": "02"}
+                """)
         let peripheral = ReplayScript.inferredPeripheral
         let selector = { (uuid: UInt16) in CharacteristicSelector(peripheral: peripheral, characteristic: BLEUUID(uuid)) }
         for (speed, least, most) in [(2.0, 150, 1_000), (0.0, 0, 150)] {
@@ -228,11 +237,12 @@ struct ReplayCentralTests {
 
     @Test("a read returns the latest value recorded up to the session's place in the capture")
     func readsFollowTheTimeline() async throws {
-        let recording = try CaptureRecording(jsonl: """
-            {"t": 0, "dir": "info", "uuid": "3333", "hex": "ffff", "note": "read"}
-            {"t": 1, "dir": "tx", "uuid": "3333", "hex": "0102", "mode": "with_response"}
-            {"t": 2, "dir": "info", "uuid": "3333", "hex": "0102", "note": "read"}
-            """)
+        let recording = try CaptureRecording(
+            jsonl: """
+                {"t": 0, "dir": "info", "uuid": "3333", "hex": "ffff", "note": "read"}
+                {"t": 1, "dir": "tx", "uuid": "3333", "hex": "0102", "mode": "with_response"}
+                {"t": 2, "dir": "info", "uuid": "3333", "hex": "0102", "note": "read"}
+                """)
         let peripheral = ReplayScript.inferredPeripheral
         let target = CharacteristicSelector(peripheral: peripheral, characteristic: BLEUUID(0x3333))
         let (session, central) = try await replaySession(recording, peripheral: peripheral)
@@ -247,13 +257,14 @@ struct ReplayCentralTests {
     @Test("subscribing starts a recorded stream; a recorded link loss drops the link again")
     func streamAndLinkLoss() async throws {
         let id = PeripheralID(UUID())
-        let recording = try CaptureRecording(jsonl: """
-            {"t": 0, "dir": "info", "note": "connected", "peripheral": "\(id)", "name": "Thermometer"}
-            {"t": 1, "dir": "info", "uuid": "2a1c", "note": "indicate enabled on 2a1c"}
-            {"t": 1.01, "dir": "rx", "uuid": "2a1c", "hex": "01"}
-            {"t": 1.02, "dir": "rx", "uuid": "2a1c", "hex": "02"}
-            {"t": 1.03, "dir": "info", "note": "disconnected", "peripheral": "\(id)", "reason": "connection timeout"}
-            """)
+        let recording = try CaptureRecording(
+            jsonl: """
+                {"t": 0, "dir": "info", "note": "connected", "peripheral": "\(id)", "name": "Thermometer"}
+                {"t": 1, "dir": "info", "uuid": "2a1c", "note": "indicate enabled on 2a1c"}
+                {"t": 1.01, "dir": "rx", "uuid": "2a1c", "hex": "01"}
+                {"t": 1.02, "dir": "rx", "uuid": "2a1c", "hex": "02"}
+                {"t": 1.03, "dir": "info", "note": "disconnected", "peripheral": "\(id)", "reason": "connection timeout"}
+                """)
         let (session, _) = try await replaySession(recording, peripheral: id, options: ReplayCentral.Options(speed: 1))
         let connection = try await session.connectionSnapshot(id)
         #expect(connection.name == "Thermometer")
@@ -267,10 +278,11 @@ struct ReplayCentralTests {
 
     @Test("disconnecting cancels replies still on their way")
     func disconnectCancels() async throws {
-        let recording = try CaptureRecording(jsonl: """
-            {"t": 0, "dir": "info", "note": "notify enabled on ff02"}
-            {"t": 0.3, "dir": "rx", "uuid": "ff02", "hex": "01"}
-            """)
+        let recording = try CaptureRecording(
+            jsonl: """
+                {"t": 0, "dir": "info", "note": "notify enabled on ff02"}
+                {"t": 0.3, "dir": "rx", "uuid": "ff02", "hex": "01"}
+                """)
         let peripheral = ReplayScript.inferredPeripheral
         let (session, _) = try await replaySession(recording, peripheral: peripheral, options: ReplayCentral.Options(speed: 1))
         _ = try await session.subscribe(CharacteristicSelector(peripheral: peripheral, characteristic: BLEUUID(0xFF02)))

@@ -65,12 +65,13 @@ enum AttributeTools {
             ],
             effect: .writesToDevice
         ) { arguments, session in
-            let replyPrefix = try arguments[prefix].map { (text: String) throws(ToolError) -> Data in
-                guard let bytes = Hex.decode(text) else {
-                    throw .invalidArguments("Argument 'reply_prefix' must be hex, got \"\(text)\".")
-                }
-                return bytes
-            } ?? Data()
+            let replyPrefix =
+                try arguments[prefix].map { (text: String) throws(ToolError) -> Data in
+                    guard let bytes = Hex.decode(text) else {
+                        throw .invalidArguments("Argument 'reply_prefix' must be hex, got \"\(text)\".")
+                    }
+                    return bytes
+                } ?? Data()
             let target = try CommonArguments.selector(arguments)
             let transaction = try await session.transact(
                 try CommonArguments.payload(arguments),

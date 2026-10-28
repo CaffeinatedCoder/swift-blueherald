@@ -154,9 +154,12 @@ struct CaptureLine {
                     "manufacturer": peripheral.manufacturerData.map { .string(Hex.encode($0)) },
                 ],
                 json: [
-                    "advertised_services": peripheral.serviceUUIDs.isEmpty ? nil : Self.array(peripheral.serviceUUIDs.map { Self.string(Self.uuid($0)) }),
+                    "advertised_services": peripheral.serviceUUIDs.isEmpty
+                        ? nil : Self.array(peripheral.serviceUUIDs.map { Self.string(Self.uuid($0)) }),
                     "service_data": peripheral.serviceData.isEmpty
-                        ? nil : Self.object(peripheral.serviceData.map { (Self.uuid($0.key), Self.string(Hex.encode($0.value))) }.sorted { $0.0 < $1.0 }),
+                        ? nil
+                        : Self.object(
+                            peripheral.serviceData.map { (Self.uuid($0.key), Self.string(Hex.encode($0.value))) }.sorted { $0.0 < $1.0 }),
                 ])
         case .connected(let peripheral, let name):
             info(note: "connected", ["peripheral": .string(peripheral.description), "name": name.map(CaptureValue.string)])
@@ -204,7 +207,8 @@ struct CaptureLine {
         "{" + fields.map { "\(Self.string($0.0)): \($0.1)" }.joined(separator: ", ") + "}"
     }
 
-    private mutating func row(_ direction: String, _ address: CharacteristicAddress, _ value: Data, _ extra: [String: CaptureValue?] = [:]) {
+    private mutating func row(_ direction: String, _ address: CharacteristicAddress, _ value: Data, _ extra: [String: CaptureValue?] = [:])
+    {
         append("dir", Self.string(direction))
         append("uuid", Self.string(Self.uuid(address.characteristic)))
         append("hex", Self.string(Hex.encode(value)))
@@ -308,7 +312,8 @@ struct CaptureLine {
             case "\r": escaped += "\\r"
             case "\t": escaped += "\\t"
             case let control where control.value < 0x20:
-                escaped += "\\u" + String(repeating: "0", count: 4 - String(control.value, radix: 16).count)
+                escaped +=
+                    "\\u" + String(repeating: "0", count: 4 - String(control.value, radix: 16).count)
                     + String(control.value, radix: 16)
             default: escaped.unicodeScalars.append(scalar)
             }

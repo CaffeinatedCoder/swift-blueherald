@@ -6,7 +6,9 @@ import Testing
 struct BLEUUIDTests {
     @Test(
         "short, prefixed and long spellings of a SIG UUID are equal",
-        arguments: ["2A19", "2a19", "0x2A19", " 2a19 ", "00002A19", "00002a19-0000-1000-8000-00805f9b34fb", "00002A1900001000800000805F9B34FB"])
+        arguments: [
+            "2A19", "2a19", "0x2A19", " 2a19 ", "00002A19", "00002a19-0000-1000-8000-00805f9b34fb", "00002A1900001000800000805F9B34FB",
+        ])
     func sigSpellings(text: String) throws {
         let uuid = try #require(BLEUUID(text))
         #expect(uuid == BLEUUID(0x2A19))
@@ -165,7 +167,9 @@ struct ScanFilterTests {
         #expect(peripheral.rssi == -60)
         #expect(peripheral.strongestRSSI == -60)
         #expect(peripheral.manufacturerID == 0x004C)
-        #expect(ScanFilter(nameContains: "polar", serviceUUIDs: [BLEUUID(0x180D)], minimumRSSI: -65, manufacturerID: 0x004C).matches(peripheral))
+        #expect(
+            ScanFilter(nameContains: "polar", serviceUUIDs: [BLEUUID(0x180D)], minimumRSSI: -65, manufacturerID: 0x004C).matches(peripheral)
+        )
     }
 
     @Test(

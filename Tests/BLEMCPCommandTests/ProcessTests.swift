@@ -33,7 +33,8 @@ struct ProcessTests {
         try process.run()
 
         // The answer to `initialize` shows the server is serving, so its signal handlers are in place.
-        let request = #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"tests","version":"0"}}}"#
+        let request =
+            #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"tests","version":"0"}}}"#
         input.fileHandleForWriting.write(Data((request + "\n").utf8))
         var answer = Data()
         while !answer.contains(UInt8(ascii: "\n")) {
@@ -94,11 +95,15 @@ struct ReplayProcessTests {
             return try? JSONSerialization.jsonObject(with: message) as? [String: Any]
         }
         func call(_ id: Int, _ tool: String, _ arguments: String) -> [String: Any]? {
-            let response = send(#"{"jsonrpc":"2.0","id":\#(id),"method":"tools/call","params":{"name":"\#(tool)","arguments":\#(arguments)}}"#)
+            let response = send(
+                #"{"jsonrpc":"2.0","id":\#(id),"method":"tools/call","params":{"name":"\#(tool)","arguments":\#(arguments)}}"#)
             return (response?["result"] as? [String: Any])?["structuredContent"] as? [String: Any]
         }
 
-        #expect(send(#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"tests","version":"0"}}}"#) != nil)
+        #expect(
+            send(
+                #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"tests","version":"0"}}}"#
+            ) != nil)
         input.fileHandleForWriting.write(Data(#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.utf8 + [UInt8(ascii: "\n")]))
 
         let status = try #require(call(2, "ble_status", "{}"))
@@ -110,7 +115,9 @@ struct ReplayProcessTests {
         let peripheral = "9D290B5A-71BE-5F31-2DB0-81271E936393"
         _ = try #require(call(3, "ble_connect", #"{"peripheral_id":"\#(peripheral)"}"#))
         let exchange = try #require(
-            call(4, "ble_transact", #"{"peripheral_id":"\#(peripheral)","characteristic_uuid":"ff01","value":"abcd03fd0278","reply_uuid":"ff02"}"#))
+            call(
+                4, "ble_transact",
+                #"{"peripheral_id":"\#(peripheral)","characteristic_uuid":"ff01","value":"abcd03fd0278","reply_uuid":"ff02"}"#))
         let reply = try #require(exchange["reply"] as? [String: Any])
         #expect((reply["value"] as? [String: Any])?["hex"] as? String == "abcd04ff00027b")
     }
@@ -123,7 +130,8 @@ struct ReplayProcessTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let changed = directory.appendingPathComponent("changed.jsonl")
         let original = try String(contentsOf: Self.fixture, encoding: .utf8)
-        try original.replacingOccurrences(of: "abcd04ff00027b", with: "abcd04ff00027c").write(to: changed, atomically: true, encoding: .utf8)
+        try original.replacingOccurrences(of: "abcd04ff00027b", with: "abcd04ff00027c").write(
+            to: changed, atomically: true, encoding: .utf8)
 
         func run(_ arguments: [String]) throws -> (status: Int32, output: String) {
             let process = Process()

@@ -294,8 +294,10 @@ public struct ToolArguments: Sendable {
         let names = Set(declared.map(\.name))
         let unknown = given.keys.filter { !names.contains($0) }.sorted()
         guard unknown.isEmpty else {
-            let valid = declared.isEmpty ? "This tool takes no arguments." : "Valid arguments: \(declared.map(\.name).joined(separator: ", "))."
-            throw .invalidArguments("Unknown argument\(unknown.count == 1 ? "" : "s") \(unknown.map { "'\($0)'" }.joined(separator: ", ")). \(valid)")
+            let valid =
+                declared.isEmpty ? "This tool takes no arguments." : "Valid arguments: \(declared.map(\.name).joined(separator: ", "))."
+            throw .invalidArguments(
+                "Unknown argument\(unknown.count == 1 ? "" : "s") \(unknown.map { "'\($0)'" }.joined(separator: ", ")). \(valid)")
         }
         self.values = given
     }

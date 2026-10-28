@@ -88,8 +88,14 @@ public struct ServerConfiguration: Sendable, Equatable {
     public static let variables: [(name: String, meaning: String)] = [
         ("BLE_MCP_ALLOW_WRITES", "1/true/yes enables ble_write and ble_write_descriptor (default: off)"),
         ("BLE_MCP_WRITE_ALLOWLIST", "comma-separated characteristic UUIDs that may be written with any value"),
-        ("BLE_MCP_WRITE_VALUE_ALLOWLIST", "comma-separated characteristic:hex frames, e.g. ff01:abcd035e01d9; listed characteristics accept only these frames"),
-        ("BLE_MCP_WRITE_VALUE_ALLOWLIST_FILE", "file with one characteristic:hex frame per line (# starts a comment); merged with the above"),
+        (
+            "BLE_MCP_WRITE_VALUE_ALLOWLIST",
+            "comma-separated characteristic:hex frames, e.g. ff01:abcd035e01d9; listed characteristics accept only these frames"
+        ),
+        (
+            "BLE_MCP_WRITE_VALUE_ALLOWLIST_FILE",
+            "file with one characteristic:hex frame per line (# starts a comment); merged with the above"
+        ),
         ("BLE_MCP_WRITE_DENYLIST", "comma-separated characteristic UUIDs that are never written, whatever the allowlists say"),
         ("BLE_MCP_MAX_CONNECTIONS", "simultaneous connections, 1-32 (default: 4)"),
         ("BLE_MCP_MAX_SUBSCRIPTIONS", "active notification subscriptions, 1-512 (default: 32)"),
@@ -152,7 +158,8 @@ private struct EnvironmentReader {
     func number(_ name: String, in range: ClosedRange<Double>) throws(ConfigurationError) -> Double? {
         guard let value = raw(name) else { return nil }
         guard let number = Double(value), range.contains(number) else {
-            throw ConfigurationError(variable: name, value: value, expected: "a number from \(Int(range.lowerBound)) to \(Int(range.upperBound))")
+            throw ConfigurationError(
+                variable: name, value: value, expected: "a number from \(Int(range.lowerBound)) to \(Int(range.upperBound))")
         }
         return number
     }

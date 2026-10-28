@@ -48,7 +48,8 @@ enum CommonArguments {
 
     static let writeMode = Argument.optional(
         "mode", as: WriteMode.self,
-        "with_response waits for the peripheral's acknowledgement; without_response is faster but unconfirmed. Defaults to with_response when the characteristic supports it.")
+        "with_response waits for the peripheral's acknowledgement; without_response is faster but unconfirmed. Defaults to with_response when the characteristic supports it."
+    )
 
     static let characteristicTarget: [any ArgumentDeclaration] = [peripheral, characteristic, service]
 

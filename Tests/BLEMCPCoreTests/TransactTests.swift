@@ -15,8 +15,12 @@ struct TransactTests {
         central = FakeCentral(devices: [meter])
     }
 
-    var rx: CharacteristicAddress { CharacteristicAddress(peripheral: meter.id, service: Fixtures.uartService, characteristic: Fixtures.uartRX) }
-    var tx: CharacteristicAddress { CharacteristicAddress(peripheral: meter.id, service: Fixtures.uartService, characteristic: Fixtures.uartTX) }
+    var rx: CharacteristicAddress {
+        CharacteristicAddress(peripheral: meter.id, service: Fixtures.uartService, characteristic: Fixtures.uartRX)
+    }
+    var tx: CharacteristicAddress {
+        CharacteristicAddress(peripheral: meter.id, service: Fixtures.uartService, characteristic: Fixtures.uartTX)
+    }
 
     func selector(_ characteristic: BLEUUID) -> CharacteristicSelector {
         CharacteristicSelector(peripheral: meter.id, service: nil, characteristic: characteristic)
@@ -30,7 +34,8 @@ struct TransactTests {
     }
 
     func exchange(_ session: BLESession, prefix: Data = Data(), timeout: Duration = .seconds(5)) async throws(BLEError) -> Transaction {
-        try await session.transact(auth, to: selector(Fixtures.uartRX), replyOn: selector(Fixtures.uartTX), prefix: prefix, timeout: timeout)
+        try await session.transact(
+            auth, to: selector(Fixtures.uartRX), replyOn: selector(Fixtures.uartTX), prefix: prefix, timeout: timeout)
     }
 
     @Test("the reply comes back in the same call and is taken out of the buffer")

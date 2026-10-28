@@ -269,7 +269,8 @@ let exitStatus = server.terminate()
 report.check("SIGTERM exits cleanly", exitStatus == 0, "exit status \(exitStatus)")
 
 let captureFile = try FileManager.default.contentsOfDirectory(atPath: workspace.path).first { $0.hasSuffix(".jsonl") }
-let rows = try captureFile.map { try String(contentsOf: workspace.appendingPathComponent($0), encoding: .utf8) }?
+let rows =
+    try captureFile.map { try String(contentsOf: workspace.appendingPathComponent($0), encoding: .utf8) }?
     .split(separator: "\n")
     .compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] } ?? []
 report.check("capture starts with its info row", rows.first?["note"] as? String == "capture started")

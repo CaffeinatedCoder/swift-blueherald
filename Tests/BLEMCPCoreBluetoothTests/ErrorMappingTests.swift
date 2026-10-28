@@ -20,7 +20,8 @@ struct ErrorMappingTests {
         #expect(mapped.hint?.contains("pairing dialog") == true)
     }
 
-    @Test("lost keys and an encryption timeout mean pairing failed", arguments: [CBError.peerRemovedPairingInformation, .encryptionTimedOut])
+    @Test(
+        "lost keys and an encryption timeout mean pairing failed", arguments: [CBError.peerRemovedPairingInformation, .encryptionTimedOut])
     func pairingFailed(_ code: CBError.Code) {
         let failure = error(CBErrorDomain, code.rawValue, "Peer removed pairing information")
         #expect(BLEError(failure, during: "Read") == .pairingFailed(reason: "Peer removed pairing information"))

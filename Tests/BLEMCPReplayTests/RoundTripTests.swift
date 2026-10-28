@@ -17,7 +17,8 @@ struct RoundTripTests {
     /// What an agent does in both runs: find the meter, read, and run two exchanges.
     func experiment(on central: some BLECentral, capturingTo path: String) async throws -> [Data?] {
         let capture = try JSONLCaptureFile(path: path)
-        let session = BLESession(central: central, configuration: SessionConfiguration(writePolicy: WritePolicy(isEnabled: true)), capture: capture)
+        let session = BLESession(
+            central: central, configuration: SessionConfiguration(writePolicy: WritePolicy(isEnabled: true)), capture: capture)
         await session.start()
         let scan = try await session.scan(filter: ScanFilter(nameContains: "BB-500"), duration: .seconds(1), stopAfter: 1)
         #expect(scan.peripherals.map(\.id) == [meter.id])
@@ -75,12 +76,14 @@ struct CaptureDiffTests {
 
     @Test("timing, notes and info rows do not count")
     func ignoresTiming() throws {
-        let left = try recording("""
+        let left = try recording(
+            """
             {"t": 0, "dir": "info", "note": "capture started"}
             {"t": 1, "dir": "tx", "uuid": "ff01", "hex": "01", "note": "auth"}
             {"t": 1.2, "dir": "rx", "uuid": "ff02", "hex": "02"}
             """)
-        let right = try recording("""
+        let right = try recording(
+            """
             {"t": 5, "dir": "tx", "uuid": "FF01", "hex": "01", "mode": "with_response"}
             {"t": 5, "dir": "info", "note": "select AC V", "select": "G"}
             {"t": 9, "dir": "rx", "uuid": "0000ff02-0000-1000-8000-00805f9b34fb", "hex": "02"}
@@ -92,12 +95,14 @@ struct CaptureDiffTests {
 
     @Test("changes come out in capture order with their line numbers")
     func changes() throws {
-        let left = try recording("""
+        let left = try recording(
+            """
             {"t": 1, "dir": "tx", "uuid": "ff01", "hex": "01"}
             {"t": 2, "dir": "rx", "uuid": "ff02", "hex": "aa"}
             {"t": 3, "dir": "info", "uuid": "2a19", "hex": "57", "note": "read"}
             """)
-        let right = try recording("""
+        let right = try recording(
+            """
             {"t": 1, "dir": "tx", "uuid": "ff01", "hex": "01"}
             {"t": 2, "dir": "rx", "uuid": "ff02", "hex": "bb"}
             {"t": 3, "dir": "info", "uuid": "2a19", "hex": "57", "note": "read"}
