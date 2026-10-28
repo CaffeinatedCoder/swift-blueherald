@@ -86,9 +86,9 @@ work and close it from the PR (`Closes #n`). The labels, on issues and PRs alike
 `area/*` the change touches, `severity/*` on a bug, `silent` for a bug that answers wrongly without an
 error, `breaking` for a change to a tool, an environment variable or the capture format,
 `needs-hardware`, and `stacked` on a PR whose base is another open PR. A PR carries its issue's labels
-and milestone. A release is an `epic` with a milestone, and its work is attached as sub-issues; `gh issue list
---label epic` finds the open one. The labels on GitHub follow `.github/labels.json`: after changing it,
-run `.github/scripts/sync-labels.sh`.
+and milestone. A release is an `epic` with a milestone, and its work is attached as sub-issues;
+`gh issue list --label epic` finds the open one. The labels on GitHub follow `.github/labels.json`:
+after changing it, run `.github/scripts/sync-labels.sh`.
 
 ## Style and commits
 
