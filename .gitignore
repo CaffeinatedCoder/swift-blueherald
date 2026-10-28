@@ -7,3 +7,12 @@ DerivedData/
 *.xcodeproj
 .netrc
 .vscode/
+
+# Editors and tools
+.idea/
+.index-build/
+/.claude/agent-memory-local/
+/.claude/settings.local.json
+
+# Captures written while trying the server out (Tests/**/Fixtures are tracked)
+/ble-mcp-*.jsonl
